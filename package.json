@@ -20,5 +20,8 @@
     "opusscript": "^0.0.8",
     "play-dl": "^1.9.7",
     "tweetnacl": "^1.0.3"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
