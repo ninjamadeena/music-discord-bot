@@ -1,11 +1,12 @@
+# Configure the environment for Nixpacks (Railway)
 [variables]
-# Specify Node.js major version. Nixpacks will use this to determine the Node
-# version to install. Only the major version is used.
+# Force use of Node.js major version 20
 NIXPACKS_NODE_VERSION = '20'
 
+[phases.setup]
+# Install ffmpeg via apt so audio streaming works without ffmpeg-static
+aptPkgs = ['ffmpeg']
+
 [phases.install]
-# Override the default install command. npm ci requires a package-lock.json
-# that matches the dependencies exactly. Since we've updated dependencies (e.g.
-# added ffmpeg-static), npm ci would fail. Use npm install instead to
-# generate a new lockfile during deployment.
+# Use npm install instead of npm ci so lockfile mismatches do not break the build
 cmds = ['npm install']
