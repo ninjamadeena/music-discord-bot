@@ -24,6 +24,24 @@ try {
 } catch (e) {
   // If undici is unavailable or the exports have changed, ignore.
 }
+
+// -----------------------------------------------------------------------------
+// Set FFMPEG_PATH for ffmpeg-static
+//
+// The play-dl and ytdl fallback require a working ffmpeg binary. On cloud
+// platforms like Railway, ffmpeg is not installed system-wide. The
+// `ffmpeg-static` package downloads a compatible ffmpeg binary during install.
+// Here we set the `FFMPEG_PATH` environment variable so dependent libraries
+// can locate it. If the import fails, the variable remains undefined, and
+// external ffmpeg must be installed separately.
+try {
+  const ffmpegPath = require('ffmpeg-static');
+  if (ffmpegPath) {
+    process.env.FFMPEG_PATH = ffmpegPath;
+  }
+} catch (e) {
+  // ignore if ffmpeg-static is not installed
+}
 const fs = require("fs");
 const path = require("path");
 
