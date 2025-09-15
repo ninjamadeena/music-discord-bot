@@ -1,7 +1,52 @@
 // index.js
 require("dotenv").config();
+
+// -----------------------------------------------------------------------------
+// Polyfill for `File` and `Blob` on older Node.js versions
+//
+// Some dependencies (notably `undici`, used internally by modules like
+// `@distube/ytdl-core`) expect the global `File` and `Blob` constructors to
+// exist. These classes were added to the Node.js runtime starting with
+// Node 20. On platforms like Railway, which may default to an older LTS
+// version of Node.js, these constructors are undefined and cause a
+// `ReferenceError: File is not defined` at runtime. To gracefully support
+// older runtimes we conditionally import them from the `undici` package and
+// assign them to the global scope. The try/catch guard protects against
+// failures if the package interface changes.
+try {
+  const { File, Blob } = require('undici');
+  if (typeof global.File === 'undefined' && typeof File !== 'undefined') {
+    global.File = File;
+  }
+  if (typeof global.Blob === 'undefined' && typeof Blob !== 'undefined') {
+    global.Blob = Blob;
+  }
+} catch (e) {
+  // If undici is unavailable or the exports have changed, ignore.
+}
 const fs = require("fs");
 const path = require("path");
+
+// -----------------------------------------------------------------------------
+// Keep‑alive HTTP server for Railway deployment
+//
+// Railway (and some other cloud hosts) expect your application to bind to the
+// port provided via the `PORT` environment variable. Without an open listener
+// the process may shut down prematurely, causing the Discord bot to appear
+// offline. Termux does not enforce this requirement, but Railway does. To
+// support both environments we spin up a very small HTTP server that simply
+// responds with a short message on any request. This does not interfere with
+// the bot’s functionality but ensures that the container stays alive on
+// platforms like Railway. We avoid pulling in extra dependencies such as
+// Express by using Node’s built‑in `http` module.
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Discord music bot is running');
+}).listen(PORT, () => {
+  console.log('HTTP server listening on port ' + PORT);
+});
 
 const {
   Client,
