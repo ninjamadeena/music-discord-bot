@@ -66,6 +66,7 @@ http.createServer((req, res) => {
   console.log('HTTP server listening on port ' + PORT);
 });
 
+// -----------------------------------------------------------------------------
 const {
   Client,
   GatewayIntentBits,
@@ -139,7 +140,22 @@ const USER_AGENT =
 //  DISCORD CLIENT
 // =========================
 const client = new Client({
+
+// -----------------------------------------------------------------------------
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+});
+
+// -----------------------------------------------------------------------------
+// Error handlers to prevent the bot from crashing on unhandled promise
+// rejections or client errors. Without these handlers, unknown interactions
+// (e.g. when a reply is attempted after Discord times out) will emit an
+// 'error' event on the client and crash the process. We catch and log them
+// instead.
+client.on('error', (err) => {
+  logPretty('ERROR', `Client error: ${err?.message || err}`, {});
+});
+process.on('unhandledRejection', (err) => {
+  logPretty('ERROR', `Unhandled promise rejection: ${err?.message || err}`, {});
 });
 
 // =========================
