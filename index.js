@@ -164,7 +164,7 @@ process.on('unhandledRejection', (err) => {
 const commands = [
   new SlashCommandBuilder()
     .setName("play")
-    .setDescription("เล่นเพลงจาก YouTube (รับชื่อเพลงหรือ URL)")
+    .setDescription("เล่นเพลงจาก YouTube (ชื่อเพลงหรือ URL)")
     .addStringOption((o) =>
       o.setName("query").setDescription("ชื่อเพลง/URL").setRequired(true)
     ),
