@@ -535,7 +535,7 @@ client.login(process.env.TOKEN);  Client,
   REST,
   Routes,
   Events,
-  = require("discord.js");
+  require("discord.js");
 
 const {
   joinVoiceChannel,
