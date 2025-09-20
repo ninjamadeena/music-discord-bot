@@ -1,7 +1,7 @@
 # Configure the environment for Nixpacks (Railway)
 [variables]
-# Force use of Node.js major version 24
-NIXPACKS_NODE_VERSION = '24'
+# Force use of Node.js major version 22
+NIXPACKS_NODE_VERSION = '22'
 
 [phases.setup]
 # Install ffmpeg via apt so audio streaming works without ffmpeg-static
