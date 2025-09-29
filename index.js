@@ -1,72 +1,14 @@
 // index.js
 require("dotenv").config();
 
-// -----------------------------------------------------------------------------
-// Polyfill for `File` and `Blob` on older Node.js versions
-//
-// Some dependencies (notably `undici`, used internally by modules like
-// `@distube/ytdl-core`) expect the global `File` and `Blob` constructors to
-// exist. These classes were added to the Node.js runtime starting with
-// Node 20. On platforms like Railway, which may default to an older LTS
-// version of Node.js, these constructors are undefined and cause a
-// `ReferenceError: File is not defined` at runtime. To gracefully support
-// older runtimes we conditionally import them from the `undici` package and
-// assign them to the global scope. The try/catch guard protects against
-// failures if the package interface changes.
-try {
-  const { File, Blob } = require('undici');
-  if (typeof global.File === 'undefined' && typeof File !== 'undefined') {
-    global.File = File;
-  }
-  if (typeof global.Blob === 'undefined' && typeof Blob !== 'undefined') {
-    global.Blob = Blob;
-  }
-} catch (e) {
-  // If undici is unavailable or the exports have changed, ignore.
-}
-
-// -----------------------------------------------------------------------------
-// Set FFMPEG_PATH for ffmpeg-static
-//
-// The play-dl and ytdl fallback require a working ffmpeg binary. On cloud
-// platforms like Railway, ffmpeg is not installed system-wide. The
-// `ffmpeg-static` package downloads a compatible ffmpeg binary during install.
-// Here we set the `FFMPEG_PATH` environment variable so dependent libraries
-// can locate it. If the import fails, the variable remains undefined, and
-// external ffmpeg must be installed separately.
-try {
-  const ffmpegPath = require('ffmpeg-static');
-  if (ffmpegPath) {
-    process.env.FFMPEG_PATH = ffmpegPath;
-  }
-} catch (e) {
-  // ignore if ffmpeg-static is not installed
-}
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
+const { spawn } = require("child_process");
 
-// -----------------------------------------------------------------------------
-// Keep‑alive HTTP server for Railway deployment
-//
-// Railway (and some other cloud hosts) expect your application to bind to the
-// port provided via the `PORT` environment variable. Without an open listener
-// the process may shut down prematurely, causing the Discord bot to appear
-// offline. Termux does not enforce this requirement, but Railway does. To
-// support both environments we spin up a very small HTTP server that simply
-// responds with a short message on any request. This does not interfere with
-// the bot’s functionality but ensures that the container stays alive on
-// platforms like Railway. We avoid pulling in extra dependencies such as
-// Express by using Node’s built‑in `http` module.
-const http = require('http');
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Discord music bot is running');
-}).listen(PORT, () => {
-  console.log('HTTP server listening on port ' + PORT);
-});
-
-// -----------------------------------------------------------------------------
+// -----------------------------
+// Discord & Voice
+// -----------------------------
 const {
   Client,
   GatewayIntentBits,
@@ -75,7 +17,6 @@ const {
   Routes,
   Events,
 } = require("discord.js");
-
 const {
   joinVoiceChannel,
   createAudioPlayer,
@@ -84,193 +25,188 @@ const {
   getVoiceConnection,
 } = require("@discordjs/voice");
 
-const playdl = require("play-dl");
-const ytdl = require("@distube/ytdl-core");
+// -----------------------------
+// Keep-alive (Railway/Render friendly)
+// -----------------------------
+const PORT = process.env.PORT || 3000;
+http
+  .createServer((_, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Discord music bot is running");
+  })
+  .listen(PORT, () => console.log("HTTP server on " + PORT));
 
-// =========================
-//  LOG SYSTEM (ANSI + FILE)
-// =========================
+// -----------------------------
+// ffmpeg path (ffmpeg-static)
+// -----------------------------
+let FFMPEG = null;
+try { FFMPEG = require("ffmpeg-static"); } catch { /* system ffmpeg fallback */ }
+
+// -----------------------------
+// yt-dlp (via yt-dlp-exec)
+// -----------------------------
+const ytdlp = require("yt-dlp-exec");
+
+// -----------------------------
+// Logging (console + file)
+// -----------------------------
 const LOG_DIR = path.join(process.cwd(), "logs");
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 const LOG_FILE = path.join(LOG_DIR, "bot.log");
-
-function nowStr() {
-  return new Date().toISOString().replace("T", " ").split(".")[0];
-}
-const C = {
-  reset: "\x1b[0m",
-  cyan: "\x1b[36m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  red: "\x1b[31m",
-  white: "\x1b[37m",
-};
-function colorize(s, code) {
-  return code + s + C.reset;
-}
-function logPretty(type, msg, extra = {}) {
-  let col = C.white;
-  if (type === "COMMAND") col = C.cyan;
-  if (type === "NOWPLAY") col = C.green;
-  if (type === "PING") col = C.yellow;
-  if (type === "ERROR") col = C.red;
-
-  const ws = Math.round((client?.ws?.ping) || 0);
-  const line =
-    `[${nowStr()}] ${msg}` +
-    ` | ping=${ws}ms` +
-    (extra.rtt ? ` rtt=${extra.rtt}ms` : "") +
-    (extra.tail ? ` | ${extra.tail}` : "");
-
-  console.log(colorize(line, col));        // สีบน Termux
-  try { fs.appendFileSync(LOG_FILE, line + "\n", "utf8"); } catch {} // เก็บลงไฟล์
+function nowStr() { return new Date().toISOString().replace("T", " ").split(".")[0]; }
+function log(msg) {
+  const line = `[${nowStr()}] ${msg}`;
+  console.log(line);
+  try { fs.appendFileSync(LOG_FILE, line + "\n"); } catch {}
 }
 
-// =========================
-//  PLAY-DL COOKIE (ถ้ามี)
-// =========================
-if (process.env.YT_COOKIE) {
-  playdl.setToken({ youtube: { cookie: process.env.YT_COOKIE } }).catch(() => {});
+// -----------------------------
+// yt-dlp: Auto Update + Scheduler (Asia/Bangkok)
+// -----------------------------
+const UPDATE_MARK_FILE = path.join(process.cwd(), "data", "yt-dlp.last");
+const BKK_OFFSET_MS = 7 * 60 * 60 * 1000; // UTC+7
+let isUpdatingYtDlp = false;
+
+function readLastUpdateTs() {
+  try { return Number(fs.readFileSync(UPDATE_MARK_FILE, "utf8")); } catch { return 0; }
+}
+function writeLastUpdateTs(ts = Date.now()) {
+  try {
+    const dir = path.dirname(UPDATE_MARK_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(UPDATE_MARK_FILE, String(ts), "utf8");
+  } catch {}
+}
+async function runYtDlpUpdate(interactionReplyFn) {
+  if (isUpdatingYtDlp) { interactionReplyFn?.("⏳ กำลังอัปเดตอยู่แล้ว"); return; }
+  isUpdatingYtDlp = true;
+  const started = Date.now();
+  try {
+    try { await ytdlp("--version"); } catch {}
+    const out = await ytdlp("-U", { shell: true }).catch(err => ({ error: err }));
+    if (out?.error) {
+      log(`yt-dlp update failed: ${out.error.message || out.error}`);
+      interactionReplyFn?.("❌ อัปเดตไม่สำเร็จ (ดู log)");
+    } else {
+      const msg = (out?.stdout || out)?.toString?.().trim?.() || "(no stdout)";
+      log(`yt-dlp update done: ${msg}`);
+      writeLastUpdateTs(started);
+      interactionReplyFn?.("✅ อัปเดตเสร็จแล้ว");
+    }
+  } catch (e) {
+    log(`yt-dlp update error: ${e?.message || e}`);
+    interactionReplyFn?.("❌ อัปเดตไม่สำเร็จ (เกิดข้อผิดพลาด)");
+  } finally {
+    isUpdatingYtDlp = false;
+  }
+}
+function msUntilNextBangkokMidnight() {
+  const now = new Date();
+  const bkkNow = new Date(now.getTime() + BKK_OFFSET_MS);
+  const nextMidnightBkkUTCms = Date.UTC(
+    bkkNow.getUTCFullYear(),
+    bkkNow.getUTCMonth(),
+    bkkNow.getUTCDate() + 1,
+    0, 0, 0, 0
+  ) - BKK_OFFSET_MS;
+  return Math.max(1, nextMidnightBkkUTCms - now.getTime());
+}
+function scheduleDailyBangkokMidnight(fn) {
+  const delay = msUntilNextBangkokMidnight();
+  setTimeout(async () => {
+    try { await fn(); } finally { scheduleDailyBangkokMidnight(fn); }
+  }, delay);
 }
 
-const USER_AGENT =
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
-// =========================
-//  DISCORD CLIENT
-// =========================
+// -----------------------------
+// Discord client + Slash commands
+// -----------------------------
 const client = new Client({
-
-// -----------------------------------------------------------------------------
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
-// -----------------------------------------------------------------------------
-// Error handlers to prevent the bot from crashing on unhandled promise
-// rejections or client errors. Without these handlers, unknown interactions
-// (e.g. when a reply is attempted after Discord times out) will emit an
-// 'error' event on the client and crash the process. We catch and log them
-// instead.
-client.on('error', (err) => {
-  logPretty('ERROR', `Client error: ${err?.message || err}`, {});
-});
-process.on('unhandledRejection', (err) => {
-  logPretty('ERROR', `Unhandled promise rejection: ${err?.message || err}`, {});
-});
-
-// =========================
-/** Slash Commands */
-// =========================
 const commands = [
   new SlashCommandBuilder()
     .setName("play")
     .setDescription("เล่นเพลงจาก YouTube (ชื่อเพลงหรือ URL)")
-    .addStringOption((o) =>
+    .addStringOption(o =>
       o.setName("query").setDescription("ชื่อเพลง/URL").setRequired(true)
     ),
   new SlashCommandBuilder().setName("skip").setDescription("ข้ามเพลงปัจจุบัน"),
   new SlashCommandBuilder().setName("stop").setDescription("หยุดเพลงและล้างคิว"),
   new SlashCommandBuilder().setName("pause").setDescription("หยุดชั่วคราว"),
   new SlashCommandBuilder().setName("resume").setDescription("เล่นต่อ"),
-  new SlashCommandBuilder()
-    .setName("playlist")
-    .setDescription("เพิ่มทั้ง Playlist จาก YouTube")
-    .addStringOption((o) =>
-      o.setName("url").setDescription("ลิงก์เพลย์ลิสต์ YouTube").setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("เช็คค่า ping ของบอท"),
-].map((c) => c.toJSON());
+  new SlashCommandBuilder().setName("ping").setDescription("เช็คค่า ping"),
+  new SlashCommandBuilder().setName("botupdate").setDescription("อัปเดต yt-dlp ตอนนี้"),
+].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
-// =========================
-//  QUEUE / PLAYER
-// =========================
+// -----------------------------
+// Queue / Player
+// -----------------------------
 let queue = [];
 let current = null;
 const player = createAudioPlayer();
 
-async function sendToTextChannel(guild, textChannelId, content) {
-  try {
-    const ch = guild.channels.cache.get(textChannelId);
-    if (ch && ch.isTextBased?.()) return ch.send(content);
-  } catch {}
-  return Promise.resolve();
-}
+player.on(AudioPlayerStatus.Idle, () => {
+  if (!current) return;
+  log(`⏭️ finished: ${current.title}`);
+  playNext(current.guild, current.textChannelId);
+});
+player.on("error", (e) => log(`Player error: ${e?.message || e}`));
 
-// =========================
-//  RESOLVE YOUTUBE
-// =========================
-async function resolveToVideo(query) {
+client.on("error", (e) => log(`Client error: ${e?.message || e}`));
+process.on("unhandledRejection", (e) => log(`unhandledRejection: ${e}`));
+
+// -----------------------------
+// Helpers
+// -----------------------------
+function isUrl(s) { try { new URL(s); return true; } catch { return false; } }
+
+async function resolveToWatchUrl(query) {
+  if (isUrl(query)) return query;
   try {
-    const isUrl = /^https?:\/\//i.test(query);
-    if (isUrl) {
-      const kind = (playdl.yt_validate?.(query)) || playdl.validate(query);
-      if (kind === "video" || kind === "yt_video") {
-        const info = await playdl.video_basic_info(query);
-        return { title: info.video_details.title, url: info.video_details.url };
-      }
-      if (ytdl.validateURL(query)) {
-        const info = await ytdl.getInfo(query, {
-          requestOptions: {
-            headers: {
-              "user-agent": USER_AGENT,
-              ...(process.env.YT_COOKIE ? { cookie: process.env.YT_COOKIE } : {}),
-            },
-          },
-        });
-        return { title: info.videoDetails.title, url: info.videoDetails.video_url };
-      }
-      return null;
-    } else {
-      const results = await playdl.search(query, { limit: 1, source: { youtube: "video" } });
-      if (!results.length) return null;
-      return { title: results[0].title, url: results[0].url };
-    }
-  } catch {
+    const out = await ytdlp(`ytsearch1:${query}`, { getUrl: true, shell: true });
+    const url = (out.stdout || "").trim().split("\n").pop();
+    return url || null;
+  } catch (e) {
+    log("resolve fail: " + (e?.message || e));
     return null;
   }
 }
 
-// =========================
-//  GET AUDIO STREAM
-// =========================
-async function getAudioStream(url) {
+async function getTitle(input) {
   try {
-    const s = await playdl.stream(url);
-    if (s?.stream) return { stream: s.stream, type: s.type, via: "play-dl" };
+    const info = await ytdlp(input, { dumpSingleJson: true, noCheckCertificates: true, shell: true });
+    if (info && info.title) return info.title;
   } catch {}
-
-  try {
-    if (ytdl.validateURL(url)) {
-      const s2 = ytdl(url, {
-        filter: "audioonly",
-        highWaterMark: 1 << 25,
-        quality: "highestaudio",
-        requestOptions: {
-          headers: {
-            "user-agent": USER_AGENT,
-            ...(process.env.YT_COOKIE ? { cookie: process.env.YT_COOKIE } : {}),
-          },
-        },
-      });
-      return { stream: s2, type: undefined, via: "@distube/ytdl-core" };
-    }
-  } catch {}
-
-  return null;
+  return input;
 }
 
-// =========================
-//  VOICE CONNECTION
-// =========================
-async function ensureVC(guild, voiceChannelId) {
+function spawnFfmpegInput(inputUrl) {
+  const args = [
+    "-reconnect", "1",
+    "-reconnect_streamed", "1",
+    "-reconnect_delay_max", "5",
+    "-i", inputUrl,
+    "-vn",
+    "-acodec", "pcm_s16le",
+    "-f", "s16le",
+    "-ar", "48000",
+    "-ac", "2",
+    "pipe:1",
+  ];
+  const ff = spawn(FFMPEG || "ffmpeg", args, { stdio: ["ignore", "pipe", "ignore"] });
+  ff.on("error", (e) => log("ffmpeg spawn error: " + e?.message));
+  return ff.stdout;
+}
+
+function ensureVC(guild, channelId) {
   let conn = getVoiceConnection(guild.id);
   if (!conn) {
     conn = joinVoiceChannel({
-      channelId: voiceChannelId,
+      channelId,
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: true,
@@ -280,207 +216,114 @@ async function ensureVC(guild, voiceChannelId) {
   return conn;
 }
 
-// =========================
-//  PLAY NEXT
-// =========================
-async function playNext(ctx) {
-  const { guild, textChannelId } = ctx;
-
+async function playNext(guild, textChannelId) {
   if (!queue.length) {
     current = null;
     const vc = getVoiceConnection(guild.id);
     if (vc) vc.destroy();
-    await sendToTextChannel(guild, textChannelId, "⏹️ คิวหมดแล้ว");
-    logPretty("NOWPLAY", "⏹️ QUEUE EMPTY");
     return;
   }
-
   current = queue.shift();
+
   try {
-    await ensureVC(guild, current.channelId);
-
-    const audio = await getAudioStream(current.url);
-    if (!audio?.stream) {
-      await sendToTextChannel(guild, current.textChannelId, `⚠️ เล่นไม่ได้ ข้าม: **${current.title}**`);
-      logPretty("ERROR", `Stream fail: ${current.title}`, { tail: `url=${current.url}` });
-      return playNext({ guild, textChannelId: current.textChannelId });
+    ensureVC(guild, current.voiceChannelId);
+    const inputUrl = await resolveToWatchUrl(current.source);
+    if (!inputUrl) {
+      log("cannot resolve stream, skip: " + current.source);
+      return playNext(guild, textChannelId);
     }
-
-    const resource = createAudioResource(
-      audio.stream,
-      audio.type ? { inputType: audio.type } : {}
-    );
+    const pcm = spawnFfmpegInput(inputUrl);
+    const resource = createAudioResource(pcm);
     player.play(resource);
-
-    const ws = Math.round(client.ws.ping || 0);
-    await sendToTextChannel(
-      guild,
-      current.textChannelId,
-      `🎶 กำลังเล่น: **${current.title}** — ขอโดย ${current.requestedBy} (${audio.via}) | ping ${ws} ms`
-    );
-    const tail = `by=${current.requestedBy} via=${audio.via} up_next=${queue.slice(0,3).map(x=>x.title).join(" | ") || "-"}`;
-    logPretty("NOWPLAY", `🎶 NOW PLAYING: ${current.title}`, { tail });
+    log(`🎶 now: ${current.title} | via yt-dlp`);
   } catch (e) {
-    await sendToTextChannel(
-      guild,
-      current.textChannelId,
-      `⚠️ มีปัญหากับเพลงนี้ ข้าม: **${current?.title ?? "ไม่ทราบชื่อ"}**`
-    );
-    logPretty("ERROR", `Play error: ${e?.message || e}`);
-    return playNext({ guild, textChannelId: current.textChannelId });
+    log("play error: " + (e?.message || e));
+    playNext(guild, textChannelId);
   }
 }
 
-// =========================
-//  PLAYER EVENTS
-// =========================
-player.on(AudioPlayerStatus.Idle, () => {
-  if (!current) return;
-  const guild = client.guilds.cache.get(current.guildId);
-  if (!guild) return;
-  // จบเพลง -> ไปเพลงถัดไป
-  logPretty("NOWPLAY", `⏭️ FINISHED: ${current.title}`);
-  playNext({ guild, textChannelId: current.textChannelId });
-});
-
-player.on("error", (e) => {
-  logPretty("ERROR", `Player error: ${e?.message}`);
-});
-
-// =========================
-//  READY
-// =========================
+// -----------------------------
+// Ready
+// -----------------------------
 client.once(Events.ClientReady, async () => {
   console.log(`✅ bot online ${client.user.tag}`);
   try {
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log("✅ Slash Commands โหลดแล้ว");
-  } catch (err) {
-    logPretty("ERROR", `Register commands error: ${err?.message}`);
+    console.log("✅ Slash commands registered");
+  } catch (e) {
+    log("register error: " + (e?.message || e));
   }
+
+  // เริ่มตั้งเวลาอัปเดตทุกเที่ยงคืน (เวลาไทย)
+  scheduleDailyBangkokMidnight(() => runYtDlpUpdate());
+  // ถ้าห่างการอัปเดตครั้งสุดท้าย > 24 ชม. ให้ลองอัปเดตตอนบูต
+  const ONE_DAY = 24 * 3600 * 1000;
+  if (Date.now() - readLastUpdateTs() > ONE_DAY) runYtDlpUpdate();
 });
 
-// =========================
-//  HELPERS
-// =========================
-function inSameVoiceChannel(interaction) {
-  const me = interaction.guild.members.me;
-  const userVC = interaction.member?.voice?.channelId;
+// -----------------------------
+// Commands
+// -----------------------------
+client.on("interactionCreate", async (itx) => {
+  if (!itx.isChatInputCommand()) return;
+
+  const me = itx.guild.members.me;
+  const userVC = itx.member?.voice?.channelId;
   const botVC = me?.voice?.channelId;
-  return userVC && (!botVC || botVC === userVC);
-}
+  const sameVC = userVC && (!botVC || botVC === userVC);
 
-// =========================
-//  COMMAND HANDLER
-// =========================
-client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  const rtt = Date.now() - interaction.createdTimestamp;
-
-  // /ping อนุญาตให้ใช้ได้แม้ไม่อยู่ช่องเดียวกัน
-  if (!inSameVoiceChannel(interaction) && interaction.commandName !== "ping") {
-    return interaction.reply({ content: "❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน", ephemeral: true });
+  if (itx.commandName !== "ping" && itx.commandName !== "botupdate" && !sameVC) {
+    return itx.reply({ content: "❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน", ephemeral: true });
   }
 
-  if (interaction.commandName === "ping") {
-    const ws = Math.round(client.ws.ping || 0);
-    await interaction.reply(`\n> WebSocket: \`${ws} ms\`\n> RTT: \`${rtt} ms\``);
-    logPretty("PING", ` PING requested by ${interaction.user.tag}`, { rtt });
+  if (itx.commandName === "ping") {
+    return itx.reply(`WebSocket: \`${Math.round(itx.client.ws.ping)} ms\``);
   }
 
-  if (interaction.commandName === "play") {
-    await interaction.deferReply();
-    const q = interaction.options.getString("query");
+  if (itx.commandName === "botupdate") {
+    await itx.deferReply({ ephemeral: true });
+    await runYtDlpUpdate((msg) => itx.editReply(msg));
+    return;
+  }
 
-    const video = await resolveToVideo(q);
-    if (!video) {
-      logPretty("ERROR", `Resolve fail for query`, { tail: `q="${q}"` });
-      return interaction.editReply("❌ รองรับเฉพาะวิดีโอ YouTube หรือค้นหาไม่เจอ");
-    }
-
+  if (itx.commandName === "play") {
+    await itx.deferReply();
+    const q = itx.options.getString("query");
+    const title = await getTitle(q);
     queue.push({
-      title: video.title,
-      url: video.url,
-      requestedBy: interaction.user.tag,
-      guildId: interaction.guild.id,
-      channelId: interaction.member.voice.channel.id,
-      textChannelId: interaction.channelId,
+      title,
+      source: q,
+      guild: itx.guild,
+      voiceChannelId: userVC,
+      textChannelId: itx.channelId,
     });
-
-    await interaction.editReply(`➕ เพิ่ม **${video.title}** ลงคิว`);
-    logPretty("COMMAND", `🎮 /play by ${interaction.user.tag}`, {
-      rtt,
-      tail: `query="${q}" add="${video.title}" queue_len=${queue.length}`,
-    });
-
-    if (!current) {
-      await playNext({ guild: interaction.guild, textChannelId: interaction.channelId });
-    }
+    await itx.editReply(`➕ เพิ่ม: **${title}**`);
+    if (!current) playNext(itx.guild, itx.channelId);
+    return;
   }
 
-  if (interaction.commandName === "skip") {
+  if (itx.commandName === "skip") {
     player.stop(true);
-    await interaction.reply("⏭️ ข้ามเพลงแล้ว");
-    logPretty("COMMAND", `⏭️ /skip by ${interaction.user.tag}`, { rtt });
+    return itx.reply("⏭️ ข้ามแล้ว");
   }
 
-  if (interaction.commandName === "stop") {
+  if (itx.commandName === "stop") {
     queue = [];
     current = null;
     player.stop(true);
-    const vc = getVoiceConnection(interaction.guild.id);
+    const vc = getVoiceConnection(itx.guild.id);
     if (vc) vc.destroy();
-    await interaction.reply("🛑 หยุดและล้างคิวแล้ว");
-    logPretty("COMMAND", `🛑 /stop by ${interaction.user.tag}`, { rtt, tail: "queue_cleared" });
+    return itx.reply("🛑 หยุดและล้างคิวแล้ว");
   }
 
-  if (interaction.commandName === "pause") {
+  if (itx.commandName === "pause") {
     player.pause();
-    await interaction.reply("⏸️ หยุดชั่วคราว");
-    logPretty("COMMAND", `⏸️ /pause by ${interaction.user.tag}`, { rtt });
+    return itx.reply("⏸️ หยุดชั่วคราว");
   }
 
-  if (interaction.commandName === "resume") {
+  if (itx.commandName === "resume") {
     player.unpause();
-    await interaction.reply("▶️ เล่นต่อ");
-    logPretty("COMMAND", `▶️ /resume by ${interaction.user.tag}`, { rtt });
-  }
-
-  if (interaction.commandName === "playlist") {
-    await interaction.deferReply();
-    const url = interaction.options.getString("url");
-    try {
-      const kind = (playdl.yt_validate?.(url)) || playdl.validate(url);
-      if (!(kind === "playlist" || kind === "yt_playlist")) {
-        await interaction.editReply("❌ ต้องเป็นลิงก์เพลย์ลิสต์ YouTube เท่านั้น");
-        logPretty("ERROR", "Playlist invalid", { tail: `url=${url}` });
-        return;
-      }
-      const pl = await playdl.playlist_info(url, { incomplete: true });
-      const vids = await pl.all_videos();
-      vids.forEach((v) =>
-        queue.push({
-          title: v.title,
-          url: v.url,
-          requestedBy: interaction.user.tag,
-          guildId: interaction.guild.id,
-          channelId: interaction.member.voice.channel.id,
-          textChannelId: interaction.channelId,
-        })
-      );
-      await interaction.editReply(`➕ เพิ่มเพลย์ลิสต์: **${pl.title}** (${vids.length} เพลง)`);
-      logPretty("COMMAND", `🎮 /playlist by ${interaction.user.tag}`, {
-        rtt,
-        tail: `playlist="${pl.title}" added=${vids.length} queue_len=${queue.length}`,
-      });
-
-      if (!current) {
-        await playNext({ guild: interaction.guild, textChannelId: interaction.channelId });
-      }
-    } catch (e) {
-      await interaction.editReply("❌ โหลดเพลย์ลิสต์ไม่ได้");
-      logPretty("ERROR", `Playlist load error: ${e?.message || e}`, { tail: `url=${url}` });
-    }
+    return itx.reply("▶️ เล่นต่อ");
   }
 });
 
