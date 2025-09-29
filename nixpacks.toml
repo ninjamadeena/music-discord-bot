@@ -1,17 +1,12 @@
-# Configure the environment for Nixpacks (Railway)
-
 [variables]
-# ใช้ Node 22.19 (หรืออย่างน้อย 22.12 เพื่อให้ @discordjs/voice@0.19.x ผ่าน)
 NIXPACKS_NODE_VERSION = "22.19.0"
+TZ = "Asia/Bangkok"
 
 [phases.setup]
-# ต้องมี ffmpeg สำหรับสตรีมเสียง + python3 สำหรับ yt-dlp-exec postinstall
-aptPkgs = ["ffmpeg", "python3", "ca-certificates"]
+aptPkgs = ["ffmpeg", "python3", "ca-certificates", "tzdata"]
 
 [phases.install]
-# ทำ symlink ให้มีคำสั่ง `python` และติดตั้ง npm
 cmds = [
   "ln -sf /usr/bin/python3 /usr/bin/python || true",
-  # ใช้ --omit=dev ตามคำเตือนของ npm
   "npm install --omit=dev"
 ]
