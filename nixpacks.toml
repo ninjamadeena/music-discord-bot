@@ -1,12 +1,12 @@
-# Configure the environment for Nixpacks (Railway)
 [variables]
-# Force use of Node.js major version 20
-NIXPACKS_NODE_VERSION = '20'
+NIXPACKS_NODE_VERSION = "22.19.0"
+TZ = "Asia/Bangkok"
 
 [phases.setup]
-# Install ffmpeg via apt so audio streaming works without ffmpeg-static
-aptPkgs = ['ffmpeg']
+aptPkgs = ["ffmpeg", "python3", "ca-certificates", "tzdata"]
 
 [phases.install]
-# Use npm install instead of npm ci so lockfile mismatches do not break the build
-cmds = ['npm install']
+cmds = [
+  "ln -sf /usr/bin/python3 /usr/bin/python || true",
+  "npm install --omit=dev"
+]
