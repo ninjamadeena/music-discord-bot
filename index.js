@@ -1,4 +1,4 @@
-// index.js (with YouTube cookies support)
+// index.js
 require("dotenv").config();
 
 const fs = require("fs");
@@ -26,11 +26,10 @@ const {
   demuxProbe,
 } = require("@discordjs/voice");
 
-// (แนะนำ) DAVE สำหรับ @discordjs/voice รุ่นใหม่
-try { require("@snazzah/davey"); } catch { /* optional */ }
+try { require("@snazzah/davey"); } catch {}
 
 // ---------------------------------------------------------
-// Keep-alive (Railway/Render friendly)
+// Keep-alive
 // ---------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 http.createServer((_, res) => {
@@ -39,54 +38,30 @@ http.createServer((_, res) => {
 }).listen(PORT, () => console.log("HTTP server on " + PORT));
 
 // ---------------------------------------------------------
-// Paths, data, ffmpeg
+// ffmpeg
 // ---------------------------------------------------------
-const DATA_DIR = path.join(process.cwd(), "data");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
 let FFMPEG = null;
 try { FFMPEG = require("ffmpeg-static"); } catch {}
 
 // ---------------------------------------------------------
-// yt-dlp (via yt-dlp-exec) + Cookies
+// yt-dlp + cookies
 // ---------------------------------------------------------
 const ytdlp = require("yt-dlp-exec");
 
-/** เตรียมคุกกี้:
- * - ถ้ามี YTDLP_COOKIES_TEXT จะเขียนลง data/cookies.txt แล้วใช้ไฟล์นั้น
- * - ถ้ามี YTDLP_COOKIES_PATH จะใช้ไฟล์ตามพาธที่ระบุ
- * - ไม่มีก็คืน null
- */
-function prepareCookiesFile() {
-  const text = process.env.YTDLP_COOKIES_TEXT;
-  const p = process.env.YTDLP_COOKIES_PATH=/app/cookies.txt;
-  try {
-    if (text && text.trim()) {
-      const file = path.join(DATA_DIR, "cookies.txt");
-      fs.writeFileSync(file, text, "utf8");
-      return file;
-    }
-    if (p && fs.existsSync(p)) return p;
-  } catch {}
-  return null;
-}
-
-const COOKIES_FILE = prepareCookiesFile(); // ใช้ไฟล์นี้กับทุกคำสั่ง yt-dlp
+const COOKIES_FILE = process.env.YTDLP_COOKIES_PATH || null;
 
 function ytdlpOpts(extra = {}) {
-  // ออปชันที่ใช้ร่วมกันทุกที่
   const base = {
     noCheckCertificates: true,
     retries: "infinite",
     "fragment-retries": "infinite",
   };
-  // ใส่ cookies ถ้ามี
   if (COOKIES_FILE) base.cookies = COOKIES_FILE;
   return { ...base, ...extra };
 }
 
 // ---------------------------------------------------------
-// Logging — Pretty + สี + ping/rtt/tail
+// Logging
 // ---------------------------------------------------------
 const LOG_DIR = path.join(process.cwd(), "logs");
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -114,20 +89,21 @@ function logPretty(type, msg, extra = {}) {
   console.log(colorize(line, col));
   logFile(line);
 }
-function log(msg){ logPretty("LOG", msg); }
-
-const DEBUG_FFMPEG = (process.env.DEBUG_FFMPEG || "false").toLowerCase() === "true";
 
 // ---------------------------------------------------------
-// yt-dlp: Auto Update + Scheduler (Asia/Bangkok)
+// yt-dlp Auto Update
 // ---------------------------------------------------------
-const UPDATE_MARK_FILE = path.join(DATA_DIR, "yt-dlp.last");
-const BKK_OFFSET_MS = 7 * 60 * 60 * 1000; // UTC+7
+const UPDATE_MARK_FILE = path.join(process.cwd(), "data", "yt-dlp.last");
+const BKK_OFFSET_MS = 7 * 60 * 60 * 1000;
 let isUpdatingYtDlp = false;
 
 function readLastUpdateTs(){ try { return Number(fs.readFileSync(UPDATE_MARK_FILE, "utf8")); } catch { return 0; } }
 function writeLastUpdateTs(ts = Date.now()){
-  try { fs.writeFileSync(UPDATE_MARK_FILE, String(ts), "utf8"); } catch {}
+  try {
+    const dir = path.dirname(UPDATE_MARK_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(UPDATE_MARK_FILE, String(ts), "utf8");
+  } catch {}
 }
 
 async function runYtDlpUpdate(replyFn){
@@ -139,17 +115,13 @@ async function runYtDlpUpdate(replyFn){
     const out = await ytdlp("-U").catch(err => ({ error: err }));
     if (out?.error) {
       logPretty("ERROR", `yt-dlp update failed: ${out.error.message || out.error}`);
-      replyFn?.("❌ อัปเดตไม่สำเร็จ (ดู log)");
+      replyFn?.("❌ อัปเดตไม่สำเร็จ");
     } else {
       const stdout = typeof out === "string" ? out : (out?.stdout || "");
-      const msg = stdout.toString().trim() || "(no stdout)";
-      logPretty("NOWPLAY", `yt-dlp update done: ${msg}`);
+      logPretty("NOWPLAY", `yt-dlp update done: ${stdout.toString().trim()}`);
       writeLastUpdateTs(started);
       replyFn?.("✅ อัปเดตเสร็จแล้ว");
     }
-  } catch (e) {
-    logPretty("ERROR", `yt-dlp update error: ${e?.message || e}`);
-    replyFn?.("❌ อัปเดตไม่สำเร็จ (เกิดข้อผิดพลาด)");
   } finally { isUpdatingYtDlp = false; }
 }
 
@@ -183,329 +155,118 @@ const commands = [
   new SlashCommandBuilder().setName("botupdate").setDescription("อัปเดต yt-dlp ตอนนี้"),
 ].map(c => c.toJSON());
 
-const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
-
 // ---------------------------------------------------------
 // Queue / Player
 // ---------------------------------------------------------
 let queue = [];
 let current = null;
 const player = createAudioPlayer();
+let currentPipe = null;
+let restartGuard = { tried: false };
 
-// เก็บท่อโปรเซสปัจจุบันไว้ปิดเวลา /stop หรือ /skip
-let currentPipe = /** @type {null | { ff: import('child_process').ChildProcessWithoutNullStreams, stream: NodeJS.ReadableStream }} */ (null);
-let restartGuard = { tried: false }; // กันวนรีสตาร์ทไม่รู้จบ
-
-// ส่งข้อความไปห้องที่ระบุ
 async function sendToTextChannel(guild, textChannelId, content){
   try {
     const ch = guild.channels.cache.get(textChannelId);
     if (ch && ch.isTextBased?.()) return ch.send(content);
   } catch {}
-  return Promise.resolve();
 }
 
-player.on(AudioPlayerStatus.Idle, () => {
-  cleanupCurrentPipeline();
-  if (!current) return;
-  logPretty("NOWPLAY", `⏭️ FINISHED: ${current.title}`);
-  playNext(current.guild, current.textChannelId);
-});
-player.on("error", async (e) => {
-  logPretty("ERROR", `Player error: ${e?.message || e}`);
-  // ถ้าโดน "Premature close" ให้ลองรีสตาร์ทเพลงเดิม 1 ครั้ง
-  if (!restartGuard.tried && current) {
-    restartGuard.tried = true;
-    logPretty("ERROR", "Attempting one-time stream restart due to premature close", { tail: `title="${current.title}"` });
-    await sendToTextChannel(current.guild, current.textChannelId, "🔁 สัญญาณหลุด กำลังลองเชื่อมต่อใหม่…");
-    playSame(current.guild, current.textChannelId, current); // ลองเล่นกลับเพลงเดิม
-    return;
-  }
-  // ไม่งั้นไปเพลงถัดไป
-  if (current) playNext(current.guild, current.textChannelId);
-});
-
-client.on("error", (e) => logPretty("ERROR", `Client error: ${e?.message || e}`));
-process.on("unhandledRejection", (e) => logPretty("ERROR", `unhandledRejection: ${e}`));
-
 // ---------------------------------------------------------
-// Helpers
+// yt-dlp Helpers
 // ---------------------------------------------------------
-function isUrl(s){ try { new URL(s); return true; } catch { return false; } }
-
 async function getTitle(input){
   try {
     const info = await ytdlp(input, ytdlpOpts({ dumpSingleJson: true }));
-    if (info && info.title) return info.title;
-  } catch {}
-  return input;
+    return info?.title || input;
+  } catch { return input; }
 }
 
-function swallowPipeError(err){
-  const msg = String(err?.message || err || "");
-  if (msg.includes("EPIPE") || msg.includes("ERR_STREAM_DESTROYED")) return;
-  logPretty("ERROR", "pipe error: " + msg);
-}
-
-/** ใช้ yt-dlp เลือกฟอร์แมตเสียง + คืน URL และ headers สำหรับ ffmpeg */
 async function getDirectAudioUrlAndHeaders(input) {
-  const info = await ytdlp(input, ytdlpOpts({
-    dumpSingleJson: true,
-    f: "bestaudio/best",
-  }));
-  const url = info?.url;
-  const headers = info?.http_headers || {};
-  if (!url) throw new Error("yt-dlp did not return media url");
-  return { url, headers };
+  const info = await ytdlp(input, ytdlpOpts({ dumpSingleJson: true, f: "bestaudio/best" }));
+  return { url: info?.url, headers: info?.http_headers || {} };
 }
 
-/** สร้างสตริง headers สำหรับ ffmpeg (“Header: value\r\nHeader2: value2\r\n”) */
 function buildFfmpegHeadersString(h) {
   const merged = {
-    "User-Agent": h["User-Agent"] || h["user-agent"] || "Mozilla/5.0",
+    "User-Agent": h["User-Agent"] || "Mozilla/5.0",
     "Accept": h["Accept"] || "*/*",
-    "Accept-Language": h["Accept-Language"] || "en-US,en;q=0.9",
-    "Origin": h["Origin"] || "https://www.youtube.com",
-    "Referer": h["Referer"] || "https://www.youtube.com/",
-    "Connection": "keep-alive",
-    ...(h.Cookie ? { "Cookie": h.Cookie } : (h.cookie ? { "Cookie": h.cookie } : {})),
+    "Origin": "https://www.youtube.com",
+    "Referer": "https://www.youtube.com/",
+    ...(h.Cookie ? { "Cookie": h.Cookie } : {}),
   };
   return Object.entries(merged).map(([k,v]) => `${k}: ${v}`).join("\r\n");
 }
 
-/** สร้าง ffmpeg จาก "direct url + headers" → แปลงเป็น Ogg/Opus */
 function spawnFfmpegFromDirectUrl(url, headersStr) {
   const ffArgs = [
-    "-loglevel", DEBUG_FFMPEG ? "info" : "quiet",
+    "-loglevel", "quiet",
     "-hide_banner",
-    "-reconnect", "1",
-    "-reconnect_streamed", "1",
-    "-reconnect_delay_max", "10",
-    "-rw_timeout", "15000000",
-    "-timeout", "15000000",
+    "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
     "-headers", headersStr + "\r\n",
-    "-i", url,
-    "-vn",
-    "-ac", "2",
-    "-ar", "48000",
-    "-c:a", "libopus",
-    "-b:a", "128k",
-    "-f", "ogg",
-    "pipe:1",
+    "-i", url, "-vn", "-ac", "2", "-ar", "48000",
+    "-c:a", "libopus", "-b:a", "128k", "-f", "ogg", "pipe:1",
   ];
-  const ff = spawn(FFMPEG || "ffmpeg", ffArgs, { stdio: ["ignore","pipe","pipe"] });
-  ff.on("error", (e) => logPretty("ERROR", "ffmpeg spawn error: " + e?.message));
-  ff.stdout.on("error", swallowPipeError);
-  ff.stderr.on("error", swallowPipeError);
-  if (DEBUG_FFMPEG) ff.stderr.on("data", d => logPretty("LOG", "[ffmpeg] " + d.toString().trim()));
-  return ff;
+  return spawn(FFMPEG || "ffmpeg", ffArgs, { stdio: ["ignore","pipe","pipe"] });
 }
 
-function cleanupCurrentPipeline(){
-  if (!currentPipe) return;
-  try {
-    try { currentPipe.stream.destroy(); } catch {}
-    try { currentPipe.ff.kill("SIGKILL"); } catch {}
-  } catch (e) { swallowPipeError(e); }
-  finally { currentPipe = null; }
-}
-
-function ensureVC(guild, channelId){
-  let conn = getVoiceConnection(guild.id);
-  if (!conn) {
-    conn = joinVoiceChannel({ channelId, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator, selfDeaf: true });
-    conn.subscribe(player);
-  }
-  return conn;
-}
-
-/** ถ้า query ไม่ใช่ URL ให้คืน URL ของวิดีโออันดับแรก (ใช้ cookies ถ้ามี) */
+// ---------------------------------------------------------
+// Play Queue
+// ---------------------------------------------------------
 async function resolveFirstVideoUrl(query){
-  if (isUrl(query)) return query;
+  if (/^https?:\/\//.test(query)) return query;
   try {
     const out = await ytdlp(`ytsearch1:${query}`, ytdlpOpts({ dumpSingleJson: true }));
-    const entry = out?.entries?.[0];
-    return entry?.webpage_url || null;
-  } catch (e) {
-    logPretty("ERROR", "search resolve fail: " + (e?.message || e));
-    return null;
-  }
+    return out?.entries?.[0]?.webpage_url || null;
+  } catch { return null; }
 }
 
-/** เล่นเพลงถัดไปในคิว */
 async function playNext(guild, textChannelId){
   restartGuard.tried = false;
-  cleanupCurrentPipeline();
-
-  if (!queue.length) {
-    current = null;
-    const vc = getVoiceConnection(guild.id);
-    if (vc) vc.destroy();
-    logPretty("NOWPLAY", "⏹️ QUEUE EMPTY");
-    await sendToTextChannel(guild, textChannelId, "⏹️ คิวหมดแล้ว");
-    return;
-  }
+  if (!queue.length) { current=null; return; }
   current = queue.shift();
 
   try {
-    ensureVC(guild, current.voiceChannelId);
-
     const pageUrl = await resolveFirstVideoUrl(current.source);
-    if (!pageUrl) {
-      logPretty("ERROR", "cannot resolve page url, skip", { tail: `q="${current.source}"` });
-      await sendToTextChannel(guild, current.textChannelId, `⚠️ เล่นไม่ได้ ข้าม: **${current.title}**`);
-      return playNext(guild, textChannelId);
-    }
-
-    const { url, headers } = await getDirectAudioUrlAndHeaders(pageUrl);
-    const headersStr = buildFfmpegHeadersString(headers);
-
-    const ff = spawnFfmpegFromDirectUrl(url, headersStr);
-    currentPipe = { ff, stream: ff.stdout };
-
-    const { stream, type } = await demuxProbe(ff.stdout);
-    const resource = createAudioResource(stream, { inputType: type });
-    player.play(resource);
-
-    const upNext = queue.slice(0, 3).map(x => x.title).join(" | ") || "-";
-    logPretty("NOWPLAY", `🎶 NOW PLAYING: ${current.title}`, { tail: `by=${current.requestedBy} via=ffmpeg(url+headers) up_next=${upNext}` });
-
-    const ws = wsPing();
-    await sendToTextChannel(guild, current.textChannelId, `🎶 กำลังเล่น: **${current.title}** — ขอโดย ${current.requestedBy} | ping ${ws} ms`);
-  } catch (e) {
-    logPretty("ERROR", "play error: " + (e?.message || e));
-    await sendToTextChannel(guild, current.textChannelId, `⚠️ มีปัญหากับเพลงนี้ ข้าม: **${current?.title ?? "ไม่ทราบชื่อ"}**`);
-    playNext(guild, textChannelId);
-  }
-}
-
-/** ลองเล่น "เพลงเดิม" อีกรอบ (ใช้กรณี premature close) */
-async function playSame(guild, textChannelId, item){
-  try {
-    cleanupCurrentPipeline();
-    ensureVC(guild, item.voiceChannelId);
-
-    const pageUrl = await resolveFirstVideoUrl(item.source);
     if (!pageUrl) return playNext(guild, textChannelId);
 
     const { url, headers } = await getDirectAudioUrlAndHeaders(pageUrl);
-    const headersStr = buildFfmpegHeadersString(headers);
-
-    const ff = spawnFfmpegFromDirectUrl(url, headersStr);
+    const ff = spawnFfmpegFromDirectUrl(url, buildFfmpegHeadersString(headers));
     currentPipe = { ff, stream: ff.stdout };
 
     const { stream, type } = await demuxProbe(ff.stdout);
     player.play(createAudioResource(stream, { inputType: type }));
-
-    logPretty("NOWPLAY", `🔁 RESTARTED: ${item.title}`, { tail: `via=ffmpeg(url+headers)` });
   } catch {
     playNext(guild, textChannelId);
   }
 }
 
 // ---------------------------------------------------------
-// Ready
+// Ready & Commands
 // ---------------------------------------------------------
-const restClient = new REST({ version: "10" }).setToken(process.env.TOKEN);
 client.once(Events.ClientReady, async () => {
   console.log(`✅ bot online ${client.user.tag}`);
   console.log(`🍪 cookies: ${COOKIES_FILE ? `using ${COOKIES_FILE}` : "none"}`);
-  try {
-    await restClient.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log("✅ Slash commands registered");
-  } catch (e) {
-    logPretty("ERROR", "register error: " + (e?.message || e));
-  }
-
+  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+  await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
   scheduleDailyBangkokMidnight(() => runYtDlpUpdate());
-  const ONE_DAY = 24 * 3600 * 1000;
-  if (Date.now() - readLastUpdateTs() > ONE_DAY) runYtDlpUpdate();
+  if (Date.now() - readLastUpdateTs() > 24*3600*1000) runYtDlpUpdate();
 });
 
-// ---------------------------------------------------------
-// Commands
-// ---------------------------------------------------------
 client.on("interactionCreate", async (itx) => {
   if (!itx.isChatInputCommand()) return;
-  const rtt = Date.now() - itx.createdTimestamp;
-
-  const me = itx.guild.members.me;
-  const userVC = itx.member?.voice?.channelId;
-  const botVC = me?.voice?.channelId;
-  const sameVC = userVC && (!botVC || botVC === userVC);
-
-  if (itx.commandName !== "ping" && itx.commandName !== "botupdate" && !sameVC) {
-    return itx.reply({ content: "❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน", ephemeral: true });
-  }
-
-  if (itx.commandName === "ping") {
-    await itx.reply(`\n> WebSocket: \`${Math.round(itx.client.ws.ping)} ms\`\n> RTT: \`${rtt} ms\``);
-    logPretty("PING", `PING requested by ${itx.user.tag}`, { rtt });
-    return;
-  }
-
-  if (itx.commandName === "botupdate") {
-    await itx.deferReply({ ephemeral: true });
-    logPretty("COMMAND", `/botupdate by ${itx.user.tag}`, { rtt });
-    await runYtDlpUpdate((msg) => itx.editReply(msg));
-    return;
-  }
-
   if (itx.commandName === "play") {
-    await itx.deferReply();
     const q = itx.options.getString("query");
     const title = await getTitle(q);
-    queue.push({
-      title,
-      source: q,
-      requestedBy: itx.user.tag,
-      guild: itx.guild,
-      voiceChannelId: userVC,
-      textChannelId: itx.channelId,
-    });
-    await itx.editReply(`➕ เพิ่ม: **${title}**`);
-    logPretty("COMMAND", `/play by ${itx.user.tag}`, { rtt, tail: `q="${q}" add="${title}" queue_len=${queue.length}` });
+    queue.push({ title, source: q, guild: itx.guild, voiceChannelId: itx.member.voice.channelId, textChannelId: itx.channelId });
+    await itx.reply(`➕ เพิ่ม: **${title}**`);
     if (!current) playNext(itx.guild, itx.channelId);
-    return;
   }
-
-  if (itx.commandName === "skip") {
-    player.stop(true);
-    cleanupCurrentPipeline();
-    await itx.reply("⏭️ ข้ามแล้ว");
-    await sendToTextChannel(itx.guild, itx.channelId, "⏭️ ข้ามเพลงปัจจุบัน");
-    logPretty("COMMAND", `⏭️ /skip by ${itx.user.tag}`, { rtt, tail: `queue_len=${queue.length}` });
-    return;
-  }
-
-  if (itx.commandName === "stop") {
-    queue = [];
-    current = null;
-    player.stop(true);
-    cleanupCurrentPipeline();
-    const vc = getVoiceConnection(itx.guild.id);
-    if (vc) vc.destroy();
-    await itx.reply("🛑 หยุดและล้างคิวแล้ว");
-    await sendToTextChannel(itx.guild, itx.channelId, "🛑 หยุดและล้างคิวแล้ว");
-    logPretty("COMMAND", `🛑 /stop by ${itx.user.tag}`, { rtt, tail: "queue_cleared" });
-    return;
-  }
-
-  if (itx.commandName === "pause") {
-    player.pause();
-    await itx.reply("⏸️ หยุดชั่วคราว");
-    await sendToTextChannel(itx.guild, itx.channelId, "⏸️ หยุดชั่วคราว");
-    logPretty("COMMAND", `⏸️ /pause by ${itx.user.tag}`, { rtt });
-    return;
-  }
-
-  if (itx.commandName === "resume") {
-    player.unpause();
-    await itx.reply("▶️ เล่นต่อ");
-    await sendToTextChannel(itx.guild, itx.channelId, "▶️ เล่นต่อ");
-    logPretty("COMMAND", `▶️ /resume by ${itx.user.tag}`, { rtt });
-    return;
-  }
+  if (itx.commandName === "skip") { player.stop(); await itx.reply("⏭️ ข้ามแล้ว"); }
+  if (itx.commandName === "stop") { queue=[]; player.stop(); await itx.reply("🛑 หยุดแล้ว"); }
+  if (itx.commandName === "pause") { player.pause(); await itx.reply("⏸️ หยุดชั่วคราว"); }
+  if (itx.commandName === "resume") { player.unpause(); await itx.reply("▶️ เล่นต่อ"); }
+  if (itx.commandName === "ping") { await itx.reply(`ping=${Math.round(itx.client.ws.ping)}ms`); }
+  if (itx.commandName === "botupdate") { await runYtDlpUpdate((msg)=>itx.reply(msg)); }
 });
 
 client.login(process.env.TOKEN);
