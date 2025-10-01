@@ -59,7 +59,7 @@ const ytdlp = require("yt-dlp-exec");
  */
 function prepareCookiesFile() {
   const text = process.env.YTDLP_COOKIES_TEXT;
-  const p = process.env.YTDLP_COOKIES_PATH;
+  const p = process.env.YTDLP_COOKIES_PATH=/app/cookies.txt;
   try {
     if (text && text.trim()) {
       const file = path.join(DATA_DIR, "cookies.txt");
