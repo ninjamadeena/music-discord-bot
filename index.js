@@ -1,4 +1,4 @@
-// index.js
+// index.js (with YouTube cookies support)
 require("dotenv").config();
 
 const fs = require("fs");
@@ -39,15 +39,51 @@ http.createServer((_, res) => {
 }).listen(PORT, () => console.log("HTTP server on " + PORT));
 
 // ---------------------------------------------------------
-// ffmpeg (static ถ้ามี; ไม่มีก็ใช้ของระบบ)
+// Paths, data, ffmpeg
 // ---------------------------------------------------------
+const DATA_DIR = path.join(process.cwd(), "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
 let FFMPEG = null;
 try { FFMPEG = require("ffmpeg-static"); } catch {}
 
 // ---------------------------------------------------------
-// yt-dlp (via yt-dlp-exec)
+// yt-dlp (via yt-dlp-exec) + Cookies
 // ---------------------------------------------------------
 const ytdlp = require("yt-dlp-exec");
+
+/** เตรียมคุกกี้:
+ * - ถ้ามี YTDLP_COOKIES_TEXT จะเขียนลง data/cookies.txt แล้วใช้ไฟล์นั้น
+ * - ถ้ามี YTDLP_COOKIES_PATH จะใช้ไฟล์ตามพาธที่ระบุ
+ * - ไม่มีก็คืน null
+ */
+function prepareCookiesFile() {
+  const text = process.env.YTDLP_COOKIES_TEXT;
+  const p = process.env.YTDLP_COOKIES_PATH;
+  try {
+    if (text && text.trim()) {
+      const file = path.join(DATA_DIR, "cookies.txt");
+      fs.writeFileSync(file, text, "utf8");
+      return file;
+    }
+    if (p && fs.existsSync(p)) return p;
+  } catch {}
+  return null;
+}
+
+const COOKIES_FILE = prepareCookiesFile(); // ใช้ไฟล์นี้กับทุกคำสั่ง yt-dlp
+
+function ytdlpOpts(extra = {}) {
+  // ออปชันที่ใช้ร่วมกันทุกที่
+  const base = {
+    noCheckCertificates: true,
+    retries: "infinite",
+    "fragment-retries": "infinite",
+  };
+  // ใส่ cookies ถ้ามี
+  if (COOKIES_FILE) base.cookies = COOKIES_FILE;
+  return { ...base, ...extra };
+}
 
 // ---------------------------------------------------------
 // Logging — Pretty + สี + ping/rtt/tail
@@ -85,17 +121,13 @@ const DEBUG_FFMPEG = (process.env.DEBUG_FFMPEG || "false").toLowerCase() === "tr
 // ---------------------------------------------------------
 // yt-dlp: Auto Update + Scheduler (Asia/Bangkok)
 // ---------------------------------------------------------
-const UPDATE_MARK_FILE = path.join(process.cwd(), "data", "yt-dlp.last");
+const UPDATE_MARK_FILE = path.join(DATA_DIR, "yt-dlp.last");
 const BKK_OFFSET_MS = 7 * 60 * 60 * 1000; // UTC+7
 let isUpdatingYtDlp = false;
 
 function readLastUpdateTs(){ try { return Number(fs.readFileSync(UPDATE_MARK_FILE, "utf8")); } catch { return 0; } }
 function writeLastUpdateTs(ts = Date.now()){
-  try {
-    const dir = path.dirname(UPDATE_MARK_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(UPDATE_MARK_FILE, String(ts), "utf8");
-  } catch {}
+  try { fs.writeFileSync(UPDATE_MARK_FILE, String(ts), "utf8"); } catch {}
 }
 
 async function runYtDlpUpdate(replyFn){
@@ -203,7 +235,7 @@ function isUrl(s){ try { new URL(s); return true; } catch { return false; } }
 
 async function getTitle(input){
   try {
-    const info = await ytdlp(input, { dumpSingleJson: true, noCheckCertificates: true });
+    const info = await ytdlp(input, ytdlpOpts({ dumpSingleJson: true }));
     if (info && info.title) return info.title;
   } catch {}
   return input;
@@ -217,14 +249,10 @@ function swallowPipeError(err){
 
 /** ใช้ yt-dlp เลือกฟอร์แมตเสียง + คืน URL และ headers สำหรับ ffmpeg */
 async function getDirectAudioUrlAndHeaders(input) {
-  // ให้ yt-dlp เลือกฟอร์แมตเสียง bestaudio พร้อมคืน http_headers
-  const info = await ytdlp(input, {
+  const info = await ytdlp(input, ytdlpOpts({
     dumpSingleJson: true,
-    noCheckCertificates: true,
     f: "bestaudio/best",
-    retries: "infinite",
-    "fragment-retries": "infinite",
-  });
+  }));
   const url = info?.url;
   const headers = info?.http_headers || {};
   if (!url) throw new Error("yt-dlp did not return media url");
@@ -250,11 +278,10 @@ function spawnFfmpegFromDirectUrl(url, headersStr) {
   const ffArgs = [
     "-loglevel", DEBUG_FFMPEG ? "info" : "quiet",
     "-hide_banner",
-    // สำคัญ: เปิด reconnect/timeout
     "-reconnect", "1",
     "-reconnect_streamed", "1",
     "-reconnect_delay_max", "10",
-    "-rw_timeout", "15000000", // 15s microseconds-based in some builds
+    "-rw_timeout", "15000000",
     "-timeout", "15000000",
     "-headers", headersStr + "\r\n",
     "-i", url,
@@ -292,11 +319,11 @@ function ensureVC(guild, channelId){
   return conn;
 }
 
-/** ถ้า query ไม่ใช่ URL ให้คืน URL ของวิดีโออันดับแรก */
+/** ถ้า query ไม่ใช่ URL ให้คืน URL ของวิดีโออันดับแรก (ใช้ cookies ถ้ามี) */
 async function resolveFirstVideoUrl(query){
   if (isUrl(query)) return query;
   try {
-    const out = await ytdlp(`ytsearch1:${query}`, { dumpSingleJson: true });
+    const out = await ytdlp(`ytsearch1:${query}`, ytdlpOpts({ dumpSingleJson: true }));
     const entry = out?.entries?.[0];
     return entry?.webpage_url || null;
   } catch (e) {
@@ -307,7 +334,7 @@ async function resolveFirstVideoUrl(query){
 
 /** เล่นเพลงถัดไปในคิว */
 async function playNext(guild, textChannelId){
-  restartGuard.tried = false; // รีเซ็ตรอบรีสตาร์ท
+  restartGuard.tried = false;
   cleanupCurrentPipeline();
 
   if (!queue.length) {
@@ -330,15 +357,12 @@ async function playNext(guild, textChannelId){
       return playNext(guild, textChannelId);
     }
 
-    // ดึง direct media URL + headers จาก yt-dlp
     const { url, headers } = await getDirectAudioUrlAndHeaders(pageUrl);
     const headersStr = buildFfmpegHeadersString(headers);
 
-    // ffmpeg network input (มี headers) -> ogg/opus
     const ff = spawnFfmpegFromDirectUrl(url, headersStr);
     currentPipe = { ff, stream: ff.stdout };
 
-    // probe + play
     const { stream, type } = await demuxProbe(ff.stdout);
     const resource = createAudioResource(stream, { inputType: type });
     player.play(resource);
@@ -385,6 +409,7 @@ async function playSame(guild, textChannelId, item){
 const restClient = new REST({ version: "10" }).setToken(process.env.TOKEN);
 client.once(Events.ClientReady, async () => {
   console.log(`✅ bot online ${client.user.tag}`);
+  console.log(`🍪 cookies: ${COOKIES_FILE ? `using ${COOKIES_FILE}` : "none"}`);
   try {
     await restClient.put(Routes.applicationCommands(client.user.id), { body: commands });
     console.log("✅ Slash commands registered");
