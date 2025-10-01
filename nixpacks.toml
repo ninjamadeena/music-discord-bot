@@ -3,7 +3,7 @@ NIXPACKS_NODE_VERSION = "22.19.0"
 TZ = "Asia/Bangkok"
 
 [phases.setup]
-aptPkgs = ["ffmpeg", "python3", "ca-certificates", "tzdata"]
+aptPkgs = ["ffmpeg", "python3", "ca-certificates", "tzdata", "yt-dlp"]
 
 [phases.install]
 cmds = [
