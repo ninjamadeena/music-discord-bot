@@ -13,6 +13,7 @@ const {
   REST,
   Routes,
   Events,
+  EmbedBuilder,
 } = require("discord.js");
 const {
   joinVoiceChannel,
@@ -25,18 +26,19 @@ const {
 
 try { require("@snazzah/davey"); } catch {}
 
+/* ------------------------- Keep-alive (Railway/Render) ------------------------ */
 const PORT = process.env.PORT || 3000;
 http.createServer((_, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
   res.end("Discord music bot is running");
 }).listen(PORT, () => console.log("HTTP server on " + PORT));
 
+/* ---------------------------------- ffmpeg ----------------------------------- */
 let FFMPEG = null;
 try { FFMPEG = require("ffmpeg-static"); } catch {}
 
+/* ------------------------------ yt-dlp + cookies ----------------------------- */
 const ytdlp = require("yt-dlp-exec");
-
-// ===== Cookies via PATH =====
 const COOKIES_FILE = process.env.YTDLP_COOKIES_PATH || null;
 function ytdlpOpts(extra = {}) {
   const base = {
@@ -48,7 +50,7 @@ function ytdlpOpts(extra = {}) {
   return { ...base, ...extra };
 }
 
-// ===== Logging =====
+/* ---------------------------------- logging ---------------------------------- */
 const LOG_DIR = path.join(process.cwd(), "logs");
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 const LOG_FILE = path.join(LOG_DIR, "bot.log");
@@ -76,7 +78,7 @@ function swallowPipeError(err){
 }
 const DEBUG_FFMPEG = (process.env.DEBUG_FFMPEG || "false").toLowerCase() === "true";
 
-// ===== yt-dlp Auto Update @midnight BKK =====
+/* ----------------------- yt-dlp auto-update (BKK midnight) ------------------- */
 const DATA_DIR = path.join(process.cwd(), "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const UPDATE_MARK_FILE = path.join(DATA_DIR, "yt-dlp.last");
@@ -113,10 +115,11 @@ function scheduleDailyBangkokMidnight(fn){
   setTimeout(async () => { try { await fn(); } finally { scheduleDailyBangkokMidnight(fn); } }, delay);
 }
 
-// ===== Discord client + Slash commands =====
+/* ------------------------------ Discord client -------------------------------- */
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 _clientForPing = client;
 
+/* --------------------------------- Commands ---------------------------------- */
 const commands = [
   new SlashCommandBuilder().setName("play").setDescription("เล่นเพลงจาก YouTube (ชื่อเพลงหรือ URL)")
     .addStringOption(o => o.setName("query").setDescription("ชื่อเพลง/URL").setRequired(true)),
@@ -126,15 +129,22 @@ const commands = [
   new SlashCommandBuilder().setName("resume").setDescription("เล่นต่อ"),
   new SlashCommandBuilder().setName("ping").setDescription("เช็คค่า ping"),
   new SlashCommandBuilder().setName("botupdate").setDescription("อัปเดต yt-dlp ตอนนี้"),
+  new SlashCommandBuilder().setName("np").setDescription("ตอนนี้กำลังเล่นเพลงอะไร"),
+  new SlashCommandBuilder().setName("queue").setDescription("ดูคิวเพลงที่เหลือ"),
+  new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-150)")
+    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-150)").setRequired(true).setMinValue(0).setMaxValue(150)),
 ].map(c => c.toJSON());
 
-// ===== Queue / Player =====
-let queue = [];
-let current = null;
+/* ---------------------------- Queue / Player state ---------------------------- */
+let queue = [];                    // [{title, source, requestedBy, guild, voiceChannelId, textChannelId}]
+let current = null;                // item ปัจจุบัน
 const player = createAudioPlayer();
 let currentPipe = /** @type {null | { ff: import('child_process').ChildProcessWithoutNullStreams, stream: NodeJS.ReadableStream }} */ (null);
 let restartGuard = { tried: false };
+let currentResource = null;        // createAudioResource(.., {inlineVolume:true})
+let volumePct = 100;               // 0..150 (log volume)
 
+/* ------------------------------- Util functions ------------------------------- */
 async function sendToTextChannel(guild, textChannelId, content){
   try {
     const ch = guild.channels.cache.get(textChannelId);
@@ -157,9 +167,9 @@ function cleanupCurrentPipeline(){
   } catch (e) { swallowPipeError(e); }
   finally { currentPipe = null; }
 }
-
-// ===== yt-dlp helpers =====
 function isUrl(s){ try { new URL(s); return true; } catch { return false; } }
+
+/* ------------------------------ yt-dlp helpers -------------------------------- */
 async function getTitle(input){
   try {
     const info = await ytdlp(input, ytdlpOpts({ dumpSingleJson: true }));
@@ -222,9 +232,10 @@ function spawnFfmpegFromDirectUrl(url, headersStr) {
   return ff;
 }
 
-// ===== Player events =====
+/* ------------------------------ Player events -------------------------------- */
 player.on(AudioPlayerStatus.Idle, () => {
   cleanupCurrentPipeline();
+  currentResource = null;
   if (!current) return;
   logPretty("NOWPLAY", `⏭️ FINISHED: ${current.title}`);
   playNext(current.guild, current.textChannelId);
@@ -243,7 +254,7 @@ player.on("error", async (e) => {
 client.on("error", (e) => logPretty("ERROR", `Client error: ${e?.message || e}`));
 process.on("unhandledRejection", (e) => logPretty("ERROR", `unhandledRejection: ${e}`));
 
-// ===== Play queue =====
+/* --------------------------------- Play flow --------------------------------- */
 async function playNext(guild, textChannelId){
   restartGuard.tried = false;
   cleanupCurrentPipeline();
@@ -273,14 +284,18 @@ async function playNext(guild, textChannelId){
     currentPipe = { ff, stream: ff.stdout };
 
     const { stream, type } = await demuxProbe(ff.stdout);
-    const resource = createAudioResource(stream, { inputType: type });
+    const resource = createAudioResource(stream, { inputType: type, inlineVolume: true });
+    currentResource = resource;
+    // ใช้ logarithmic volume ให้ฟังดูธรรมชาติ
+    setVolumePct(volumePct);
+
     player.play(resource);
 
     const upNext = queue.slice(0, 3).map(x => x.title).join(" | ") || "-";
     logPretty("NOWPLAY", `🎶 NOW PLAYING: ${current.title}`, { tail: `by=${current.requestedBy} via=ffmpeg(url+headers) up_next=${upNext}` });
 
     const ws = wsPing();
-    await sendToTextChannel(guild, current.textChannelId, `🎶 กำลังเล่น: **${current.title}** — ขอโดย ${current.requestedBy} | ping ${ws} ms`);
+    await sendToTextChannel(guild, current.textChannelId, `🎶 กำลังเล่น: **${current.title}** — ขอโดย ${current.requestedBy} | ping ${ws} ms | 🔊 ${volumePct}%`);
   } catch (e) {
     logPretty("ERROR", "play error: " + (e?.message || e));
     await sendToTextChannel(guild, current.textChannelId, `⚠️ มีปัญหากับเพลงนี้ ข้าม: **${current?.title ?? "ไม่ทราบชื่อ"}**`);
@@ -291,20 +306,36 @@ async function playSame(guild, textChannelId, item){
   try {
     cleanupCurrentPipeline();
     ensureVC(guild, item.voiceChannelId);
+
     const pageUrl = await resolveFirstVideoUrl(item.source);
     if (!pageUrl) return playNext(guild, textChannelId);
+
     const { url, headers } = await getDirectAudioUrlAndHeaders(pageUrl);
     const ff = spawnFfmpegFromDirectUrl(url, buildFfmpegHeadersString(headers));
     currentPipe = { ff, stream: ff.stdout };
+
     const { stream, type } = await demuxProbe(ff.stdout);
-    player.play(createAudioResource(stream, { inputType: type }));
+    const resource = createAudioResource(stream, { inputType: type, inlineVolume: true });
+    currentResource = resource;
+    setVolumePct(volumePct);
+    player.play(resource);
+
     logPretty("NOWPLAY", `🔁 RESTARTED: ${item.title}`, { tail: `via=ffmpeg(url+headers)` });
   } catch {
     playNext(guild, textChannelId);
   }
 }
 
-// ===== Ready & Commands =====
+/* ------------------------------- Volume helper -------------------------------- */
+function setVolumePct(pct){
+  // clamp 0..150
+  if (pct < 0) pct = 0;
+  if (pct > 150) pct = 150;
+  volumePct = pct;
+  try { currentResource?.volume?.setVolumeLogarithmic(pct / 100); } catch {}
+}
+
+/* ------------------------------ Ready & commands ------------------------------ */
 const restClient = new REST({ version: "10" }).setToken(process.env.TOKEN);
 client.once(Events.ClientReady, async () => {
   console.log(`✅ bot online ${client.user.tag}`);
@@ -330,7 +361,9 @@ client.on("interactionCreate", async (itx) => {
   const botVC = me?.voice?.channelId;
   const sameVC = userVC && (!botVC || botVC === userVC);
 
-  if (itx.commandName !== "ping" && itx.commandName !== "botupdate" && !sameVC) {
+  const needsSameVC = !["ping", "botupdate", "np", "queue"].includes(itx.commandName);
+
+  if (needsSameVC && !sameVC) {
     return itx.reply({ content: "❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน", ephemeral: true });
   }
 
@@ -338,11 +371,13 @@ client.on("interactionCreate", async (itx) => {
     await itx.reply(`\n> WebSocket: \`${Math.round(itx.client.ws.ping)} ms\`\n> RTT: \`${rtt} ms\``);
     return;
   }
+
   if (itx.commandName === "botupdate") {
     await itx.deferReply({ ephemeral: true });
     await runYtDlpUpdate((msg) => itx.editReply(msg));
     return;
   }
+
   if (itx.commandName === "play") {
     await itx.deferReply();
     const q = itx.options.getString("query");
@@ -359,6 +394,7 @@ client.on("interactionCreate", async (itx) => {
     if (!current) playNext(itx.guild, itx.channelId);
     return;
   }
+
   if (itx.commandName === "skip") {
     player.stop(true);
     cleanupCurrentPipeline();
@@ -366,6 +402,7 @@ client.on("interactionCreate", async (itx) => {
     await sendToTextChannel(itx.guild, itx.channelId, "⏭️ ข้ามเพลงปัจจุบัน");
     return;
   }
+
   if (itx.commandName === "stop") {
     queue = [];
     current = null;
@@ -377,17 +414,45 @@ client.on("interactionCreate", async (itx) => {
     await sendToTextChannel(itx.guild, itx.channelId, "🛑 หยุดและล้างคิวแล้ว");
     return;
   }
+
   if (itx.commandName === "pause") {
     player.pause();
     await itx.reply("⏸️ หยุดชั่วคราว");
     await sendToTextChannel(itx.guild, itx.channelId, "⏸️ หยุดชั่วคราว");
     return;
   }
+
   if (itx.commandName === "resume") {
     player.unpause();
     await itx.reply("▶️ เล่นต่อ");
     await sendToTextChannel(itx.guild, itx.channelId, "▶️ เล่นต่อ");
     return;
+  }
+
+  if (itx.commandName === "np") {
+    if (!current) return itx.reply("ℹ️ ยังไม่มีเพลงกำลังเล่น");
+    const embed = new EmbedBuilder()
+      .setTitle("Now Playing")
+      .setDescription(`**${current.title}**\nขอโดย: ${current.requestedBy}`)
+      .addFields(
+        { name: "คิวที่เหลือ", value: String(queue.length), inline: true },
+        { name: "Volume", value: `${volumePct}%`, inline: true }
+      );
+    return itx.reply({ embeds: [embed] });
+  }
+
+  if (itx.commandName === "queue") {
+    if (!queue.length) return itx.reply("📭 คิวว่าง");
+    const lines = queue.slice(0, 10).map((x, i) => `\`${i+1}.\` ${x.title} — *${x.requestedBy}*`);
+    const more = queue.length > 10 ? `\n…และอีก ${queue.length - 10} เพลง` : "";
+    return itx.reply(`🎼 **คิวเพลง (${queue.length})**\n${lines.join("\n")}${more}`);
+  }
+
+  if (itx.commandName === "volume") {
+    const v = itx.options.getInteger("value");
+    setVolumePct(v);
+    // ถ้ากำลังเล่นอยู่ ปรับทันทีใน setVolumePct แล้ว
+    return itx.reply(`🔊 ปรับความดังเป็น **${volumePct}%**`);
   }
 });
 
