@@ -24,7 +24,7 @@ const {
   demuxProbe,
 } = require("@discordjs/voice");
 
-try { require("@snazzah/davey"); } catch {}
+try { require("@snazzah/davey"); } catch { /* optional */ }
 
 /* ------------------------- Keep-alive (Railway/Render) ------------------------ */
 const PORT = process.env.PORT || 3000;
@@ -133,6 +133,9 @@ const commands = [
   new SlashCommandBuilder().setName("queue").setDescription("ดูคิวเพลงที่เหลือ"),
   new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-150)")
     .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-150)").setRequired(true).setMinValue(0).setMaxValue(150)),
+  new SlashCommandBuilder().setName("playlist").setDescription("เพิ่มเพลงเป็นชุดจาก YouTube (playlist หรือผลค้นหา)")
+    .addStringOption(o => o.setName("query").setDescription("ลิงก์ playlist หรือคำค้น").setRequired(true))
+    .addIntegerOption(o => o.setName("limit").setDescription("จำนวนสูงสุด (1-50)").setMinValue(1).setMaxValue(50)),
 ].map(c => c.toJSON());
 
 /* ---------------------------- Queue / Player state ---------------------------- */
@@ -142,7 +145,7 @@ const player = createAudioPlayer();
 let currentPipe = /** @type {null | { ff: import('child_process').ChildProcessWithoutNullStreams, stream: NodeJS.ReadableStream }} */ (null);
 let restartGuard = { tried: false };
 let currentResource = null;        // createAudioResource(.., {inlineVolume:true})
-let volumePct = 100;               // 0..150 (log volume)
+let volumePct = 100;               // 0..150
 
 /* ------------------------------- Util functions ------------------------------- */
 async function sendToTextChannel(guild, textChannelId, content){
@@ -232,6 +235,39 @@ function spawnFfmpegFromDirectUrl(url, headersStr) {
   return ff;
 }
 
+/* --------------------- playlist helper: fetch entries list -------------------- */
+/** คืนอาเรย์ [{ title, url }] จากลิงก์ playlist/mix หรือจากคำค้น (ytsearchN:) */
+async function fetchPlaylistEntries(input, limit = 25) {
+  const entries = [];
+  try {
+    if (isUrl(input)) {
+      const info = await ytdlp(input, ytdlpOpts({
+        dumpSingleJson: true,
+        "yes-playlist": true,
+        "flat-playlist": true,
+      }));
+      const arr = info?.entries || [];
+      for (const e of arr) {
+        const url = e?.webpage_url || e?.url || (e?.id ? `https://www.youtube.com/watch?v=${e.id}` : null);
+        const title = e?.title || e?.id || "unknown";
+        if (url) entries.push({ title, url });
+      }
+    } else {
+      const n = Math.min(Math.max(Number(limit) || 25, 1), 50);
+      const out = await ytdlp(`ytsearch${n}:${input}`, ytdlpOpts({ dumpSingleJson: true }));
+      const arr = out?.entries || [];
+      for (const e of arr) {
+        const url = e?.webpage_url || e?.url || (e?.id ? `https://www.youtube.com/watch?v=${e.id}` : null);
+        const title = e?.title || e?.id || "unknown";
+        if (url) entries.push({ title, url });
+      }
+    }
+  } catch (err) {
+    logPretty("ERROR", "fetchPlaylistEntries fail: " + (err?.message || err));
+  }
+  return entries;
+}
+
 /* ------------------------------ Player events -------------------------------- */
 player.on(AudioPlayerStatus.Idle, () => {
   cleanupCurrentPipeline();
@@ -286,7 +322,6 @@ async function playNext(guild, textChannelId){
     const { stream, type } = await demuxProbe(ff.stdout);
     const resource = createAudioResource(stream, { inputType: type, inlineVolume: true });
     currentResource = resource;
-    // ใช้ logarithmic volume ให้ฟังดูธรรมชาติ
     setVolumePct(volumePct);
 
     player.play(resource);
@@ -306,20 +341,16 @@ async function playSame(guild, textChannelId, item){
   try {
     cleanupCurrentPipeline();
     ensureVC(guild, item.voiceChannelId);
-
     const pageUrl = await resolveFirstVideoUrl(item.source);
     if (!pageUrl) return playNext(guild, textChannelId);
-
     const { url, headers } = await getDirectAudioUrlAndHeaders(pageUrl);
     const ff = spawnFfmpegFromDirectUrl(url, buildFfmpegHeadersString(headers));
     currentPipe = { ff, stream: ff.stdout };
-
     const { stream, type } = await demuxProbe(ff.stdout);
     const resource = createAudioResource(stream, { inputType: type, inlineVolume: true });
     currentResource = resource;
     setVolumePct(volumePct);
     player.play(resource);
-
     logPretty("NOWPLAY", `🔁 RESTARTED: ${item.title}`, { tail: `via=ffmpeg(url+headers)` });
   } catch {
     playNext(guild, textChannelId);
@@ -328,7 +359,6 @@ async function playSame(guild, textChannelId, item){
 
 /* ------------------------------- Volume helper -------------------------------- */
 function setVolumePct(pct){
-  // clamp 0..150
   if (pct < 0) pct = 0;
   if (pct > 150) pct = 150;
   volumePct = pct;
@@ -451,8 +481,36 @@ client.on("interactionCreate", async (itx) => {
   if (itx.commandName === "volume") {
     const v = itx.options.getInteger("value");
     setVolumePct(v);
-    // ถ้ากำลังเล่นอยู่ ปรับทันทีใน setVolumePct แล้ว
     return itx.reply(`🔊 ปรับความดังเป็น **${volumePct}%**`);
+  }
+
+  if (itx.commandName === "playlist") {
+    await itx.deferReply();
+    const q = itx.options.getString("query");
+    const limit = itx.options.getInteger("limit") ?? 25;
+
+    const items = await fetchPlaylistEntries(q, limit);
+    if (!items.length) {
+      return itx.editReply("❌ หาเพลงในเพลย์ลิสต์/ผลค้นหาไม่เจอ");
+    }
+
+    for (const { title, url } of items) {
+      queue.push({
+        title,
+        source: url,
+        requestedBy: itx.user.tag,
+        guild: itx.guild,
+        voiceChannelId: itx.member?.voice?.channelId,
+        textChannelId: itx.channelId,
+      });
+    }
+
+    const preview = items.slice(0, 5).map((x, i) => `\`${i + 1}.\` ${x.title}`).join("\n");
+    const more = items.length > 5 ? `\n…และอีก ${items.length - 5} เพลง` : "";
+    await itx.editReply(`📚 เพิ่มจาก **playlist/search** ทั้งหมด **${items.length}** เพลง\n${preview}${more}`);
+
+    if (!current) playNext(itx.guild, itx.channelId);
+    return;
   }
 });
 
