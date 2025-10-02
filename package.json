@@ -14,6 +14,7 @@
     "@snazzah/davey": "^0.1.7",
     "discord.js": "^14.22.1",
     "dotenv": "^17.2.2",
+    "opusscript": "^0.0.8",
     "yt-dlp-exec": "^1.0.2"
   }
 }
