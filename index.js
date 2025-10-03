@@ -132,7 +132,7 @@ const commands = [
   new SlashCommandBuilder().setName("np").setDescription("ตอนนี้กำลังเล่นเพลงอะไร"),
   new SlashCommandBuilder().setName("queue").setDescription("ดูคิวเพลงที่เหลือ"),
   new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-150)")
-    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-150)").setRequired(true).setMinValue(0).setMaxValue(150)),
+    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-500)").setRequired(true).setMinValue(0).setMaxValue(500)),
   new SlashCommandBuilder().setName("playlist").setDescription("เพิ่มเพลงเป็นชุดจาก YouTube (playlist หรือผลค้นหา)")
     .addStringOption(o => o.setName("query").setDescription("ลิงก์ playlist หรือคำค้น").setRequired(true))
     .addIntegerOption(o => o.setName("limit").setDescription("จำนวนสูงสุด (1-50)").setMinValue(1).setMaxValue(50)),
@@ -145,7 +145,7 @@ const player = createAudioPlayer();
 let currentPipe = /** @type {null | { ff: import('child_process').ChildProcessWithoutNullStreams, stream: NodeJS.ReadableStream }} */ (null);
 let restartGuard = { tried: false };
 let currentResource = null;        // createAudioResource(.., {inlineVolume:true})
-let volumePct = 100;               // 0..150
+let volumePct = 100;               // 0..500
 
 /* ------------------------------- Util functions ------------------------------- */
 async function sendToTextChannel(guild, textChannelId, content){
@@ -360,7 +360,7 @@ async function playSame(guild, textChannelId, item){
 /* ------------------------------- Volume helper -------------------------------- */
 function setVolumePct(pct){
   if (pct < 0) pct = 0;
-  if (pct > 150) pct = 150;
+  if (pct > 500) pct = 500;
   volumePct = pct;
   try { currentResource?.volume?.setVolumeLogarithmic(pct / 100); } catch {}
 }
