@@ -128,14 +128,14 @@ const commands = [
   new SlashCommandBuilder().setName("pause").setDescription("หยุดชั่วคราว"),
   new SlashCommandBuilder().setName("resume").setDescription("เล่นต่อ"),
   new SlashCommandBuilder().setName("ping").setDescription("เช็คค่า ping"),
-  new SlashCommandBuilder().setName("botupdate").setDescription("อัปเดต yt-dlp ตอนนี้"),
+  new SlashCommandBuilder().setName("botupdate").setDescription("อัปเดต yt-dlp"),
   new SlashCommandBuilder().setName("np").setDescription("ตอนนี้กำลังเล่นเพลงอะไร"),
   new SlashCommandBuilder().setName("queue").setDescription("ดูคิวเพลงที่เหลือ"),
-  new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-150)")
-    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-500)").setRequired(true).setMinValue(0).setMaxValue(500)),
+  new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-1000)")
+    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-1000)").setRequired(true).setMinValue(0).setMaxValue(1000)),
   new SlashCommandBuilder().setName("playlist").setDescription("เพิ่มเพลงเป็นชุดจาก YouTube (playlist หรือผลค้นหา)")
     .addStringOption(o => o.setName("query").setDescription("ลิงก์ playlist หรือคำค้น").setRequired(true))
-    .addIntegerOption(o => o.setName("limit").setDescription("จำนวนสูงสุด (1-50)").setMinValue(1).setMaxValue(50)),
+    .addIntegerOption(o => o.setName("limit").setDescription("จำนวนสูงสุด (1-500)").setMinValue(1).setMaxValue(500)),
 ].map(c => c.toJSON());
 
 /* ---------------------------- Queue / Player state ---------------------------- */
@@ -360,7 +360,7 @@ async function playSame(guild, textChannelId, item){
 /* ------------------------------- Volume helper -------------------------------- */
 function setVolumePct(pct){
   if (pct < 0) pct = 0;
-  if (pct > 500) pct = 500;
+  if (pct > 1000) pct = 1000;
   volumePct = pct;
   try { currentResource?.volume?.setVolumeLogarithmic(pct / 100); } catch {}
 }
