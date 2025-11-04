@@ -97,6 +97,20 @@ const config = {
   ytdlpForceIpv4: (process.env.YTDLP_FORCE_IPV4 || "true").toLowerCase() === "true",
   // Whether to automatically update yt-dlp at midnight local time
   ytdlpAutoUpdate: (process.env.YTDLP_AUTO_UPDATE || "true").toLowerCase() === "true",
+
+  // ===== Audio quality controls (.env) =====
+  audioChannels: Math.min(2, Math.max(1, Number(process.env.AUDIO_CHANNELS) || 2)),
+  audioSampleRate: Number(process.env.AUDIO_SAMPLE_RATE) || 48000,
+  opusBitrate: (process.env.OPUS_BITRATE || "128k").toLowerCase(),
+  opusVbr: (process.env.OPUS_VBR || "on").toLowerCase(),
+  opusApplication: (process.env.OPUS_APPLICATION || "audio").toLowerCase(),
+  opusFrameDuration: Number(process.env.OPUS_FRAME_DURATION) || 20,
+  opusComplexity: Math.max(0, Math.min(10, Number(process.env.OPUS_COMPLEXITY) ?? 8)),
+  audioFilter: process.env.AUDIO_FILTER || "",
+  ffmpegLowLatency: (process.env.FFMPEG_LOW_LATENCY || "true").toLowerCase() === "true",
+  ffmpegInputAnalyzeMs: Math.max(0, Number(process.env.FFMPEG_INPUT_ANALYZE_MS) || 0),
+  ffmpegReconnectDelayMax: Math.max(1, Number(process.env.FFMPEG_RECONNECT_DELAY_MAX) || 10),
+  ffmpegExtraArgs: process.env.FFMPEG_EXTRA_ARGS || "",
 };
 
 // Print out a summary of the configuration and environment variables. Sensitive
@@ -117,6 +131,18 @@ function logConfiguration() {
     { key: "timezoneOffsetHours", env: "TIMEZONE_OFFSET_HOURS" },
     { key: "ytdlpForceIpv4", env: "YTDLP_FORCE_IPV4" },
     { key: "ytdlpAutoUpdate", env: "YTDLP_AUTO_UPDATE" },
+    { key: "audioChannels", env: "AUDIO_CHANNELS" },
+    { key: "audioSampleRate", env: "AUDIO_SAMPLE_RATE" },
+    { key: "opusBitrate", env: "OPUS_BITRATE" },
+    { key: "opusVbr", env: "OPUS_VBR" },
+    { key: "opusApplication", env: "OPUS_APPLICATION" },
+    { key: "opusFrameDuration", env: "OPUS_FRAME_DURATION" },
+    { key: "opusComplexity", env: "OPUS_COMPLEXITY" },
+    { key: "audioFilter", env: "AUDIO_FILTER" },
+    { key: "ffmpegLowLatency", env: "FFMPEG_LOW_LATENCY" },
+    { key: "ffmpegInputAnalyzeMs", env: "FFMPEG_INPUT_ANALYZE_MS" },
+    { key: "ffmpegReconnectDelayMax", env: "FFMPEG_RECONNECT_DELAY_MAX" },
+    { key: "ffmpegExtraArgs", env: "FFMPEG_EXTRA_ARGS" },
   ];
   // We want to simulate loading the .env file by printing a message
   // and waiting a short time before outputting the configuration.  Using
@@ -534,54 +560,99 @@ function buildFfmpegHeadersString(h) {
   return Object.entries(merged).map(([k,v]) => `${k}: ${v}`).join("\r\n");
 }
 function spawnFfmpegFromDirectUrl(url, headersStr) {
-  if (!FFMPEG_AVAILABLE) {
-    throw new Error("ffmpeg binary not available");
-  }
-  // Construct ffmpeg arguments with more robust reconnect and low latency options.
-  const ffArgs = [
-    // Always run ffmpeg at info level so that stderr emits logs. We rely on
-    // our logging pipeline to route these messages to the debug file and
-    // respect the DEBUG_FFMPEG flag for console output.
-    "-loglevel", "info",
-    "-hide_banner",
-    // Reconnect options: automatically attempt reconnection on errors and with a delay
+  if (!FFMPEG_AVAILABLE) throw new Error("ffmpeg binary not available");
+
+  // Build argument list dynamically based off the audio/network config
+  const a = [];
+
+  // Base logging and banner settings
+  a.push("-loglevel", "info", "-hide_banner");
+
+  // Reconnect logic with configurable max delay
+  a.push(
     "-reconnect", "1",
     "-reconnect_streamed", "1",
     "-reconnect_on_network_error", "1",
-    "-reconnect_delay_max", "10",
-    // Reduce initial buffering and analysis time for faster start
-    "-fflags", "+nobuffer",
-    "-flags", "low_delay",
-    "-analyzeduration", "0",
-    "-probesize", "32k",
-    // Set timeouts for read/write operations (in microseconds)
-    "-rw_timeout", "15000000",
-    "-timeout", "15000000",
-    // Pass through HTTP headers
-    "-headers", headersStr + "\r\n",
-    "-i", url,
-    // Drop the video stream and ensure stereo/48kHz audio
-    "-vn",
-    "-ac", "2",
-    "-ar", "48000",
-    // Encode audio using libopus at 128kbps (Discord friendly)
-    "-c:a", "libopus",
-    "-b:a", "128k",
-    // Output as an ogg container to stdout
-    "-f", "ogg",
-    "pipe:1",
-  ];
-  const ff = spawn(FFMPEG || "ffmpeg", ffArgs, { stdio: ["ignore","pipe","pipe"] });
-  ff.on("error", (e) => logPretty("ERROR", "ffmpeg spawn error: " + e?.message));
+    "-reconnect_delay_max", String(config.ffmpegReconnectDelayMax)
+  );
+
+  // Tune buffering and probing depending on latency preference
+  if (config.ffmpegLowLatency) {
+    a.push(
+      "-fflags", "+nobuffer",
+      "-flags", "low_delay",
+      "-analyzeduration", String(config.ffmpegInputAnalyzeMs * 1000), // microseconds
+      "-probesize", "32k",
+      "-rw_timeout", "15000000",
+      "-timeout", "15000000"
+    );
+  } else {
+    const us = Math.max(0, config.ffmpegInputAnalyzeMs) * 1000;
+    a.push("-analyzeduration", String(us), "-probesize", "256k");
+  }
+
+  // Pass through HTTP headers and input URL
+  a.push("-headers", headersStr + "\r\n", "-i", url);
+
+  // Drop any video streams
+  a.push("-vn");
+
+  // Apply channel count and sample rate
+  a.push("-ac", String(config.audioChannels));
+  a.push("-ar", String(config.audioSampleRate));
+
+  // Optional audio filter chain
+  const afChain = (config.audioFilter || "").trim();
+  if (afChain) {
+    a.push("-af", afChain);
+  }
+
+  // Encode to Opus with bitrate and VBR settings
+  a.push("-c:a", "libopus");
+  a.push("-b:a", config.opusBitrate);
+
+  // Configure variable bitrate mode
+  if (config.opusVbr === "off") {
+    a.push("-vbr", "off");
+  } else if (config.opusVbr === "constrained") {
+    a.push("-vbr", "constrained");
+  } else {
+    a.push("-vbr", "on");
+  }
+
+  // Set Opus application profile if valid
+  if (["audio", "voip", "lowdelay"].includes(config.opusApplication)) {
+    a.push("-application", config.opusApplication);
+  }
+
+  // Frame duration (accepted values: 2.5,5,10,20,40,60 ms)
+  const fd = Number(config.opusFrameDuration);
+  if ([2.5, 5, 10, 20, 40, 60].includes(fd)) {
+    a.push("-frame_duration", String(fd));
+  }
+
+  // Complexity (0–10)
+  const cx = Number(config.opusComplexity);
+  if (Number.isFinite(cx) && cx >= 0 && cx <= 10) {
+    a.push("-compression_level", String(cx));
+  }
+
+  // Append any custom extra arguments
+  if (config.ffmpegExtraArgs && config.ffmpegExtraArgs.trim()) {
+    // Split on whitespace to allow multiple flags
+    a.push(...config.ffmpegExtraArgs.trim().split(/\s+/));
+  }
+
+  // Output container and pipe to stdout
+  a.push("-f", "ogg", "pipe:1");
+
+  const ff = spawn(FFMPEG || "ffmpeg", a, { stdio: ["ignore", "pipe", "pipe"] });
+  ff.on("error", (e) => logPretty("ERROR", "ffmpeg spawn error: " + (e?.message || e)));
   ff.stdout.on("error", swallowPipeError);
   ff.stderr.on("error", swallowPipeError);
-  // Always capture ffmpeg stderr. We route it through logPretty with type "LOG"
-  // so that it is written to the debug log file. The console output will
-  // respect the DEBUG_FFMPEG flag inside logPretty, printing only when enabled.
   ff.stderr.on("data", d => {
     try {
-      const msg = "[ffmpeg] " + d.toString().trim();
-      logPretty("LOG", msg);
+      logPretty("LOG", "[ffmpeg] " + d.toString().trim());
     } catch {}
   });
   return ff;
