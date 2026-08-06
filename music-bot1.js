@@ -362,11 +362,11 @@ const commands = [
   new SlashCommandBuilder().setName("botupdate").setDescription("อัปเดต yt-dlp"),
   new SlashCommandBuilder().setName("np").setDescription("ตอนนี้กำลังเล่นเพลงอะไร"),
   new SlashCommandBuilder().setName("queue").setDescription("ดูคิวเพลงที่เหลือ"),
-  new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-1000)")
-    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-1000)").setRequired(true).setMinValue(0).setMaxValue(1000)),
+  new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-10000)")
+    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-10000)").setRequired(true).setMinValue(0).setMaxValue(10000)),
   new SlashCommandBuilder().setName("playlist").setDescription("เพิ่มเพลงเป็นชุดจาก YouTube (playlist หรือผลค้นหา)")
     .addStringOption(o => o.setName("query").setDescription("ลิงก์ playlist หรือคำค้น").setRequired(true))
-    .addIntegerOption(o => o.setName("limit").setDescription("จำนวนสูงสุด (1-50)").setMinValue(1).setMaxValue(50)),
+    .addIntegerOption(o => o.setName("limit").setDescription("จำนวนสูงสุด (1-100)").setMinValue(1).setMaxValue(100)),
   new SlashCommandBuilder().setName("remove").setDescription("ลบเพลงจากคิวตามลำดับ")
     .addIntegerOption(o => o.setName("index").setDescription("ลำดับเพลงตาม /queue").setRequired(true).setMinValue(1)),
   new SlashCommandBuilder().setName("shuffle").setDescription("สลับลำดับคิวแบบสุ่ม"),
@@ -869,7 +869,7 @@ async function startPlayback(guild, item, state) {
 
 function setVolumePct(state, pct){
   if (pct < 0) pct = 0;
-  if (pct > 1000) pct = 1000;
+  if (pct > 10000) pct = 10000;
   state.volumePct = pct;
   applyVolume(state);
 }

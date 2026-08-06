@@ -412,30 +412,126 @@ const BOT_PREFIX = (process.env.BOT_PREFIX || process.env.COMMAND_PREFIX || "n!"
 function buildHelpEmbedPrefix(){
   const p = BOT_PREFIX;
   return new EmbedBuilder()
-    .setTitle("🎵 วิธีใช้บอทเพลง (Prefix)")
-    .setDescription(`พิมพ์คำสั่งด้วย **${p}** ตัวอย่าง: \`${p}play ลิงก์หรือชื่อเพลง\``)
+    .setColor(0x5865F2)
+    .setTitle("🎵 Music Bot — คู่มือการใช้งาน")
+    .setDescription(`> ใช้คำสั่งด้วย prefix **\`${p}\`** ตัวอย่าง: \`${p}play lofi hip hop\`\n> รองรับ **YouTube · SoundCloud · TikTok · Spotify** (track)`)
     .addFields(
-      { name: "▶️ เล่นเพลง / เพิ่มคิว", value: `• \`${p}play <ชื่อเพลง|ลิงก์>\`\n• รองรับ Spotify track: \`${p}play https://open.spotify.com/track/...\`` },
-      { name: "📚 เพิ่มเป็นชุด (YouTube)", value: `• \`${p}playlist <ลิงก์หรือคำค้น> --limit 100\`\n• ไม่ใส่ --limit = เพิ่มทั้งหมด` },
-      { name: "🎛️ ควบคุมเพลง", value: `• \`${p}queue\` ดูคิว\n• \`${p}np\` เพลงที่กำลังเล่น\n• \`${p}skip\` ข้าม\n• \`${p}stop\` หยุด+ล้างคิว\n• \`${p}pause\` / \`${p}resume\`\n• \`${p}shuffle\`\n• \`${p}remove <เลข>\`` },
-      { name: "🔁 วน / 🔊 เสียง", value: `• \`${p}loop off|track|queue\`\n• \`${p}volume 0-10000\`` },
-      { name: "🧰 ระบบ", value: `• \`${p}ping\`\n• \`${p}botupdate\`` },
+      {
+        name: "╔══════════════════════════╗",
+        value: "** ** ",
+        inline: false,
+      },
+      {
+        name: "🎶  เล่นเพลง & จัดการคิว",
+        value: [
+          `\`${p}play <ชื่อ/URL>\` — เล่นหรือเพิ่มเพลงเข้าคิว`,
+          `\`${p}playlist <URL/คำค้น> --limit N\` — โหลดเพลงเป็นชุด`,
+          `\`${p}queue\` — ดูรายการคิวทั้งหมด`,
+          `\`${p}np\` — เพลงที่กำลังเล่นอยู่`,
+          `\`${p}remove <เลข>\` — ลบเพลงออกจากคิว`,
+          `\`${p}shuffle\` — สุ่มลำดับคิว`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "⏯️  ควบคุมการเล่น",
+        value: [
+          `\`${p}skip\` — ข้ามเพลงปัจจุบัน`,
+          `\`${p}pause\` — หยุดชั่วคราว`,
+          `\`${p}resume\` — เล่นต่อ`,
+          `\`${p}stop\` — หยุดและล้างคิวทั้งหมด`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "🔊  เสียง & การวน",
+        value: [
+          `\`${p}volume <0-10000>\` — ปรับระดับเสียง`,
+          `\`${p}loop off\` — ปิดการวน`,
+          `\`${p}loop track\` — วนเพลงเดิม`,
+          `\`${p}loop queue\` — วนทั้งคิว`,
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "⚙️  ระบบ",
+        value: [
+          `\`${p}ping\` — ตรวจสอบ latency`,
+          `\`${p}botupdate\` — อัปเดต yt-dlp`,
+          `\`${p}help\` — แสดงคู่มือนี้`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "╚══════════════════════════╝",
+        value: "** **",
+        inline: false,
+      },
     )
-    .setFooter({ text: "Tip: คำสั่ง+ลิงก์ ควรพิมพ์ในบรรทัดเดียว" });
+    .setFooter({ text: "💡 Shortcut: n!p = play · n!q = queue · n!s = skip · n!h = help", iconURL: "https://cdn.discordapp.com/emojis/1009293917116919808.webp" })
+    .setTimestamp();
 }
 
 function buildHelpEmbedSlash(){
   return new EmbedBuilder()
-    .setTitle("🎵 วิธีใช้บอทเพลง (Slash)")
-    .setDescription("ใช้คำสั่งแบบ **/** ได้เลย เช่น `/play query:<ชื่อเพลง/ลิงก์>`")
+    .setColor(0x5865F2)
+    .setTitle("🎵 Music Bot — คู่มือการใช้งาน")
+    .setDescription("> ใช้คำสั่งแบบ **Slash** `/` ได้เลย\n> รองรับ **YouTube · SoundCloud · TikTok · Spotify** (track)")
     .addFields(
-      { name: "▶️ เล่นเพลง / เพิ่มคิว", value: "• `/play query:<ชื่อเพลง|ลิงก์>`\n• รองรับ Spotify track (ใส่ลิงก์ใน query ได้)" },
-      { name: "📚 เพิ่มเป็นชุด (YouTube)", value: "• `/playlist query:<ลิงก์หรือคำค้น> limit:<จำนวน>`\n• ไม่ใส่ limit = เพิ่มทั้งหมด" },
-      { name: "🎛️ ควบคุมเพลง", value: "• `/queue` ดูคิว\n• `/np` เพลงที่กำลังเล่น\n• `/skip` ข้าม\n• `/stop` หยุด+ล้างคิว\n• `/pause` / `/resume`\n• `/shuffle`\n• `/remove index:<เลข>`" },
-      { name: "🔁 วน / 🔊 เสียง", value: "• `/loop mode:<off|track|queue>`\n• `/volume value:<0-10000>`" },
-      { name: "🧰 ระบบ", value: "• `/ping`\n• `/botupdate`" },
+      {
+        name: "╔══════════════════════════╗",
+        value: "** **",
+        inline: false,
+      },
+      {
+        name: "🎶  เล่นเพลง & จัดการคิว",
+        value: [
+          "`/play query:<ชื่อ/URL>` — เล่นหรือเพิ่มเพลงเข้าคิว",
+          "`/playlist query:<URL/คำค้น> limit:<N>` — โหลดเพลงเป็นชุด",
+          "`/queue` — ดูรายการคิวทั้งหมด",
+          "`/np` — เพลงที่กำลังเล่นอยู่",
+          "`/remove index:<เลข>` — ลบเพลงออกจากคิว",
+          "`/shuffle` — สุ่มลำดับคิว",
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "⏯️  ควบคุมการเล่น",
+        value: [
+          "`/skip` — ข้ามเพลงปัจจุบัน",
+          "`/pause` — หยุดชั่วคราว",
+          "`/resume` — เล่นต่อ",
+          "`/stop` — หยุดและล้างคิวทั้งหมด",
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "🔊  เสียง & การวน",
+        value: [
+          "`/volume value:<0-10000>` — ปรับระดับเสียง",
+          "`/loop mode:off` — ปิดการวน",
+          "`/loop mode:track` — วนเพลงเดิม",
+          "`/loop mode:queue` — วนทั้งคิว",
+        ].join("\n"),
+        inline: true,
+      },
+      {
+        name: "⚙️  ระบบ",
+        value: [
+          "`/ping` — ตรวจสอบ latency",
+          "`/botupdate` — อัปเดต yt-dlp",
+          "`/help` — แสดงคู่มือนี้",
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "╚══════════════════════════╝",
+        value: "** **",
+        inline: false,
+      },
     )
-    .setFooter({ text: "Tip: ถ้าใช้พิมพ์เร็วๆ แนะนำ n!help (prefix)" });
+    .setFooter({ text: "💡 ใช้บ่อย? ลอง n!help แบบ prefix เร็วกว่า!" })
+    .setTimestamp();
 }
 
 function parseLimitFromArgs(tokens){
@@ -453,6 +549,49 @@ function parseLimitFromArgs(tokens){
   }
   return { limit, tokens: out };
 }
+
+// ─── Embed helper functions ────────────────────────────────────────────────
+const COLORS = {
+  primary:  0x5865F2, // Discord Blurple
+  success:  0x57F287, // Green
+  warning:  0xFEE75C, // Yellow
+  error:    0xED4245, // Red
+  info:     0x5DADE2, // Blue
+  music:    0xE91E63, // Pink/Music
+  queue:    0x9B59B6, // Purple
+};
+
+function makeEmbed(color = COLORS.primary) {
+  return new EmbedBuilder().setColor(color).setTimestamp();
+}
+
+function successEmbed(title, description) {
+  return makeEmbed(COLORS.success)
+    .setDescription(`### ${title}\n${description ? `${description}` : ""}`);
+}
+
+function errorEmbed(description) {
+  return makeEmbed(COLORS.error)
+    .setDescription(`### ❌  เกิดข้อผิดพลาด\n${description}`);
+}
+
+function infoEmbed(title, description) {
+  return makeEmbed(COLORS.info)
+    .setDescription(`### ${title}\n${description ? `${description}` : ""}`);
+}
+
+function musicEmbed(title, description) {
+  return makeEmbed(COLORS.music)
+    .setDescription(`### ${title}\n${description ? `${description}` : ""}`);
+}
+
+function loopLabel(mode) {
+  if (mode === "track") return "🔂 วนเพลงเดิม";
+  if (mode === "queue") return "🔁 วนทั้งคิว";
+  return "➡️ ปิด";
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 async function replyAck(msg, text){
   try { return await msg.channel.send({ content: text }); } catch { return null; }
@@ -487,7 +626,10 @@ client.on("messageCreate", async (msg) => {
 
     const allowed = new Set(["help","play","playlist","skip","stop","pause","resume","queue","np","remove","shuffle","loop","volume","ping","botupdate"]);
     if (!allowed.has(cmd)) {
-      return msg.reply(`ไม่รู้จักคำสั่งนี้: \`${BOT_PREFIX}${cmdRaw}\`\nลอง: ${Array.from(allowed).map(c=>`\`${BOT_PREFIX}${c}\``).join(" ")}`);
+      return msg.reply({ embeds: [
+        errorEmbed(`ไม่รู้จักคำสั่ง \`${BOT_PREFIX}${cmdRaw}\``)
+          .addFields({ name: "💡 คำสั่งที่รองรับ", value: Array.from(allowed).map(c=>`\`${BOT_PREFIX}${c}\``).join(" ") })
+      ]});
     }
 
     if (cmd === "help") {
@@ -499,21 +641,21 @@ client.on("messageCreate", async (msg) => {
 
     if (cmd === "play") {
       q = parts.join(" ").trim();
-      if (!q) return msg.reply(`ใส่คำค้น/ลิงก์ด้วยนะ เช่น \`${BOT_PREFIX}play คำค้น\` หรือ \`${BOT_PREFIX}play https://open.spotify.com/track/...\``);
+      if (!q) return msg.reply({ embeds: [errorEmbed(`กรุณาระบุชื่อเพลงหรือลิงก์\n**ตัวอย่าง:** \`${BOT_PREFIX}play lofi hip hop\` หรือ \`${BOT_PREFIX}play https://open.spotify.com/track/...\``)] });
     } else if (cmd === "playlist") {
       const parsed = parseLimitFromArgs(parts);
       limit = parsed.limit;
       q = parsed.tokens.join(" ").trim();
-      if (!q) return msg.reply(`ใส่คำค้น/ลิงก์ playlist ด้วยนะ เช่น \`${BOT_PREFIX}playlist <url> --limit 100\``);
+      if (!q) return msg.reply({ embeds: [errorEmbed(`กรุณาระบุลิงก์ playlist หรือคำค้น\n**ตัวอย่าง:** \`${BOT_PREFIX}playlist lofi playlist --limit 20\``)] });
     } else if (cmd === "remove") {
       index = parseInt(parts[0], 10);
-      if (Number.isNaN(index) || index < 1) return msg.reply(`ใส่เลขลำดับเพลงที่จะลบ เช่น \`${BOT_PREFIX}remove 3\``);
+      if (Number.isNaN(index) || index < 1) return msg.reply({ embeds: [errorEmbed(`กรุณาระบุหมายเลขลำดับเพลงที่ต้องการลบ\n**ตัวอย่าง:** \`${BOT_PREFIX}remove 3\``)] });
     } else if (cmd === "loop") {
       mode = (parts[0] || "").toLowerCase();
-      if (!mode) return msg.reply(`ใส่โหมด: off|track|queue เช่น \`${BOT_PREFIX}loop track\``);
+      if (!mode) return msg.reply({ embeds: [errorEmbed(`กรุณาระบุโหมด: \`off\` · \`track\` · \`queue\`\n**ตัวอย่าง:** \`${BOT_PREFIX}loop track\``)] });
     } else if (cmd === "volume") {
       value = parseInt(parts[0], 10);
-      if (Number.isNaN(value)) return msg.reply(`ใส่ค่าความดังเป็นตัวเลข เช่น \`${BOT_PREFIX}volume 700\``);
+      if (Number.isNaN(value)) return msg.reply({ embeds: [errorEmbed(`กรุณาระบุตัวเลขความดัง (0–10000)\n**ตัวอย่าง:** \`${BOT_PREFIX}volume 80\``)] });
     }
 
     // Voice channel check (same as slash)
@@ -523,30 +665,40 @@ client.on("messageCreate", async (msg) => {
     const sameVC = userVC && (!botVC || botVC === userVC);
     const needsSameVC = !["help","ping", "botupdate", "np", "queue"].includes(cmd);
     if (needsSameVC && !sameVC) {
-      return msg.reply("❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน");
+      return msg.reply({ embeds: [errorEmbed("กรุณาเข้าห้องเสียงเดียวกับบอทก่อนนะ 🎙️")] });
     }
 
     // Acknowledge receipt
-    if (cmd === "play") await replyAck(msg, "🎵 รับคำสั่งแล้ว กำลังเริ่มเพลง...");
-    else if (cmd === "playlist") await replyAck(msg, "📚 รับคำสั่งแล้ว กำลังเพิ่มเพลงเข้าคิว...");
-    else if (cmd === "volume") await replyAck(msg, `🔊 รับคำสั่งแล้ว กำลังปรับระดับเสียงเป็น ${value}...`);
-    else if (cmd === "skip") await replyAck(msg, "⏭️ รับคำสั่งแล้ว กำลังข้ามเพลง...");
-    else if (cmd === "stop") await replyAck(msg, "⏹️ รับคำสั่งแล้ว กำลังหยุดและล้างคิว...");
-    else if (cmd === "pause") await replyAck(msg, "⏸️ รับคำสั่งแล้ว กำลังหยุดชั่วคราว...");
-    else if (cmd === "resume") await replyAck(msg, "▶️ รับคำสั่งแล้ว กำลังเล่นต่อ...");
-    else if (cmd === "ping") await replyAck(msg, "🏓 รับคำสั่งแล้ว กำลังเช็ค ping...");
-    else if (cmd === "botupdate") await replyAck(msg, "🛠️ รับคำสั่งแล้ว กำลังอัปเดต yt-dlp...");
+    if (cmd === "play") await replyAck(msg, "");
+    else if (cmd === "playlist") await replyAck(msg, "");
+    else if (cmd === "volume") await replyAck(msg, "");
+    else if (cmd === "skip") await replyAck(msg, "");
+    else if (cmd === "stop") await replyAck(msg, "");
+    else if (cmd === "pause") await replyAck(msg, "");
+    else if (cmd === "resume") await replyAck(msg, "");
+    else if (cmd === "ping") await replyAck(msg, "");
+    else if (cmd === "botupdate") await replyAck(msg, "");
 
     // Execute using the same internal functions as slash
     const state = getGuildState(msg.guild);
 
     if (cmd === "ping") {
-      return msg.reply(`\n> WebSocket: \`${Math.round(msg.client.ws.ping)} ms\``);
+      return msg.reply({ embeds: [
+        makeEmbed(COLORS.info)
+          .setDescription("### 🏓  Pong!")
+          .addFields(
+            { name: "🌐 WebSocket", value: `\`${Math.round(msg.client.ws.ping)} ms\``, inline: true },
+          )
+      ]});
     }
 
     if (cmd === "botupdate") {
-      const m = await msg.reply("🛠️ กำลังอัปเดต yt-dlp...");
-      await runYtDlpUpdate((t) => m.edit(t));
+      const m = await msg.reply({ embeds: [infoEmbed("🔄  กำลังอัปเดต yt-dlp…", "โปรดรอสักครู่")] });
+      await runYtDlpUpdate((t) => m.edit({ embeds: [
+        t.startsWith("✅")
+          ? successEmbed("✅  อัปเดตสำเร็จ", "yt-dlp อัปเดตเรียบร้อยแล้ว")
+          : errorEmbed(t)
+      ], content: "" }));
       return;
     }
 
@@ -560,14 +712,22 @@ client.on("messageCreate", async (msg) => {
         voiceChannelId: userVC,
         textChannelId: msg.channelId,
       });
-      await msg.reply(`➕ เพิ่ม: **${title}**`);
+      await msg.reply({ embeds: [
+        makeEmbed(COLORS.success)
+          .setDescription(`### ➕  เพิ่มเพลงเข้าคิวแล้ว`)
+          .addFields(
+            { name: "🎵 เพลง", value: `**${title}**`, inline: false },
+            { name: "📋 ลำดับในคิว", value: `\`#${state.queue.length}\``, inline: true },
+            { name: "👤 ขอโดย", value: `${msg.author}`, inline: true },
+          )
+      ]});
       if (!state.current) playNext(msg.guild, msg.channelId, state);
       return;
     }
 
     if (cmd === "playlist") {
       const items = await fetchPlaylistEntries(q, limit);
-      if (!items.length) return msg.reply("❌ หาเพลงในเพลย์ลิสต์/ผลค้นหาไม่เจอ");
+      if (!items.length) return msg.reply({ embeds: [errorEmbed("ไม่พบเพลงในเพลย์ลิสต์หรือผลการค้นหา")] });
       for (const { title, url } of items) {
         state.queue.push({
           title,
@@ -578,7 +738,17 @@ client.on("messageCreate", async (msg) => {
           textChannelId: msg.channelId,
         });
       }
-      await msg.reply(`➕ เพิ่มทั้งสิ้น **${items.length}** เพลง`);
+      const preview = items.slice(0, 5).map((x, i) => `\`${i + 1}.\` ${x.title}`).join("\n");
+      const more = items.length > 5 ? `\n*… และอีก ${items.length - 5} เพลง*` : "";
+      await msg.reply({ embeds: [
+        makeEmbed(COLORS.queue)
+          .setDescription(`### 📚  โหลด Playlist สำเร็จ`)
+          .addFields(
+            { name: "🎶 เพลงทั้งหมด", value: `**${items.length} เพลง**`, inline: true },
+            { name: "👤 ขอโดย", value: `${msg.author}`, inline: true },
+            { name: "📋 รายการแรก", value: `${preview}${more}`, inline: false },
+          )
+      ]});
       if (!state.current) playNext(msg.guild, msg.channelId, state);
       return;
     }
@@ -587,7 +757,7 @@ client.on("messageCreate", async (msg) => {
       state.skipRequested = true;
       state.player.stop(true);
       cleanupCurrentPipeline(state);
-      return msg.reply("⏭️ ข้ามเพลงปัจจุบัน");
+      return msg.reply({ embeds: [successEmbed("⏭️  ข้ามเพลงแล้ว", state.queue.length ? `ถัดไป: **${state.queue[0]?.title || "—"}**` : "คิวหมดแล้ว")] });
     }
 
     if (cmd === "stop") {
@@ -599,49 +769,70 @@ client.on("messageCreate", async (msg) => {
       cleanupCurrentPipeline(state);
       const vc = getVoiceConnection(msg.guild.id);
       if (vc) vc.destroy();
-      return msg.reply("🛑 หยุดและล้างคิวแล้ว");
+      return msg.reply({ embeds: [successEmbed("🛑  หยุดเพลงแล้ว", "ล้างคิวและออกจากห้องเสียงเรียบร้อย")] });
     }
 
-    if (cmd === "pause") { state.player.pause(); return msg.reply("⏸️ หยุดชั่วคราว"); }
-    if (cmd === "resume") { state.player.unpause(); return msg.reply("▶️ เล่นต่อ"); }
+    if (cmd === "pause") { state.player.pause(); return msg.reply({ embeds: [infoEmbed("⏸️  หยุดชั่วคราว", "พิมพ์ `n!resume` เพื่อเล่นต่อ")] }); }
+    if (cmd === "resume") { state.player.unpause(); return msg.reply({ embeds: [successEmbed("▶️  เล่นต่อแล้ว", `กำลังเล่น: **${state.current?.title || "—"}**`)] }); }
 
     if (cmd === "np") {
-      if (!state.current) return msg.reply("ℹ️ ยังไม่มีเพลงกำลังเล่น");
-      return msg.reply(`🎶 กำลังเล่น: **${state.current.title}**\nขอโดย: ${state.current.requestedBy}`);
+      if (!state.current) return msg.reply({ embeds: [infoEmbed("🎵  ไม่มีเพลงกำลังเล่น", "ใช้ `n!play <ชื่อเพลง>` เพื่อเริ่มเล่น")] });
+      return msg.reply({ embeds: [
+        makeEmbed(COLORS.music)
+          .setDescription(`### 🎶  Now Playing`)
+          .addFields(
+            { name: "🎵 เพลง", value: `**${state.current.title}**`, inline: false },
+            { name: "👤 ขอโดย", value: state.current.requestedBy, inline: true },
+            { name: "🔊 ระดับเสียง", value: `${state.volumePct}%`, inline: true },
+            { name: "🔁 Loop", value: loopLabel(state.loopMode), inline: true },
+            { name: "📋 คิวที่เหลือ", value: `${state.queue.length} เพลง`, inline: true },
+          )
+      ]});
     }
 
     if (cmd === "queue") {
-      if (!state.queue.length) return msg.reply("📭 คิวว่าง");
-      const lines = state.queue.slice(0, 10).map((x, i) => `\`${i+1}.\` ${x.title} — *${x.requestedBy}*`);
-      const more = state.queue.length > 10 ? `\n…และอีก ${state.queue.length - 10} เพลง` : "";
-      return msg.reply(`🎼 **คิวเพลง (${state.queue.length})**\n${lines.join("\n")}${more}`);
+      if (!state.queue.length) return msg.reply({ embeds: [infoEmbed("📭  คิวว่างเปล่า", "ใช้ `n!play <ชื่อเพลง>` เพื่อเพิ่มเพลง")] });
+      const lines = state.queue.slice(0, 10).map((x, i) => `\`${String(i+1).padStart(2,"0")}.\` **${x.title}**\n　　👤 ${x.requestedBy}`).join("\n");
+      const more = state.queue.length > 10 ? `\n*… และอีก **${state.queue.length - 10}** เพลง*` : "";
+      return msg.reply({ embeds: [
+        makeEmbed(COLORS.queue)
+          .setDescription(`### 📋  คิวเพลง`)
+          .addFields(
+            { name: `รายการ (${Math.min(state.queue.length, 10)}/${state.queue.length})`, value: lines + more, inline: false },
+            { name: "🔁 Loop", value: loopLabel(state.loopMode), inline: true },
+            { name: "🎵 กำลังเล่น", value: state.current ? `**${state.current.title}**` : "—", inline: true },
+          )
+      ]});
     }
 
     if (cmd === "volume") {
       setVolumePct(state, value);
-      return msg.reply(`🔊 ปรับความดังเป็น **${state.volumePct}%**`);
+      const bar = "█".repeat(Math.round(Math.min(state.volumePct, 200) / 20)) + "░".repeat(10 - Math.round(Math.min(state.volumePct, 200) / 20));
+      return msg.reply({ embeds: [
+        successEmbed("🔊  ปรับระดับเสียงแล้ว", `\`${bar}\` **${state.volumePct}%**`)
+      ]});
     }
 
     if (cmd === "shuffle") {
       shuffleArray(state.queue);
-      return msg.reply("🔀 สุ่มคิวแล้ว");
+      return msg.reply({ embeds: [successEmbed("🔀  สุ่มคิวแล้ว", `สลับลำดับ **${state.queue.length} เพลง** เรียบร้อย`)] });
     }
 
     if (cmd === "remove") {
-      if (index > state.queue.length) return msg.reply("❌ เลขเกินจำนวนในคิว");
+      if (index > state.queue.length) return msg.reply({ embeds: [errorEmbed(`หมายเลขลำดับเกินจำนวนในคิว (มีอยู่ ${state.queue.length} เพลง)`)] });
       const [rm] = state.queue.splice(index - 1, 1);
-      return msg.reply(`🗑️ ลบ: **${rm?.title || "รายการ"}**`);
+      return msg.reply({ embeds: [successEmbed("🗑️  ลบเพลงออกจากคิวแล้ว", `**${rm?.title || "ไม่ทราบชื่อ"}**`)] });
     }
 
     if (cmd === "loop") {
-      if (!["off","track","queue"].includes(mode)) return msg.reply("❌ โหมดต้องเป็น off|track|queue");
+      if (!["off","track","queue"].includes(mode)) return msg.reply({ embeds: [errorEmbed("โหมดต้องเป็น `off` · `track` · `queue`")] });
       state.loopMode = mode;
-      return msg.reply(`🔁 ตั้งค่า loop เป็น **${mode}**`);
+      return msg.reply({ embeds: [successEmbed("🔁  ตั้งค่า Loop แล้ว", `โหมดปัจจุบัน: **${loopLabel(mode)}**`)] });
     }
 
   } catch (e) {
     console.error(e);
-    try { await msg.reply("เกิดข้อผิดพลาดตอนอ่านคำสั่ง (prefix)"); } catch {}
+    try { await msg.reply({ embeds: [errorEmbed("เกิดข้อผิดพลาดขณะอ่านคำสั่ง กรุณาลองใหม่อีกครั้ง")] }); } catch {}
   }
 });
 
@@ -1097,7 +1288,10 @@ async function handlePlayerError(error, guild, state) {
   if (!state.restartGuard.tried) {
     state.restartGuard.tried = true;
     logPretty("ERROR", "Attempting one-time stream restart due to premature close", { tail: `title="${state.current.title}"` });
-    await sendToTextChannel(guild, state.current.textChannelId, "🔁 สัญญาณหลุด กำลังลองเชื่อมต่อใหม่…");
+    await sendToTextChannel(guild, state.current.textChannelId, { embeds: [
+      makeEmbed(COLORS.warning)
+        .setDescription("### 🔁  สัญญาณหลุด\nกำลังลองเชื่อมต่อใหม่…")
+    ]});
     await playSame(guild, state.current.textChannelId, state.current, state);
     return;
   }
@@ -1114,7 +1308,10 @@ async function playNext(guild, textChannelId, state = getGuildState(guild)) {
     const vc = getVoiceConnection(guild.id);
     if (vc) vc.destroy();
     logPretty("NOWPLAY", "⏹️ QUEUE EMPTY");
-    await sendToTextChannel(guild, textChannelId, "⏹️ คิวหมดแล้ว");
+    await sendToTextChannel(guild, textChannelId, { embeds: [
+      makeEmbed(COLORS.info)
+        .setDescription("### 📭  คิวหมดแล้ว\nเพิ่มเพลงใหม่ด้วย `/play` หรือ `n!play` ได้เลย!")
+    ]});
     return;
   }
 
@@ -1125,13 +1322,26 @@ async function playNext(guild, textChannelId, state = getGuildState(guild)) {
     // Use unified playback helper; this will throw on resolution errors
     const { pageUrl } = await startPlayback(guild, next, state);
     // Compose information about upcoming tracks
-    const upNext = state.queue.slice(0, 3).map(x => x.title).join(" | ") || "-";
+    const upNext = state.queue.slice(0, 3).map(x => x.title).join(" | ") || "—";
     logPretty("NOWPLAY", `🎶 NOW PLAYING: ${next.title}`, { tail: `by=${next.requestedBy} via=ffmpeg(url+headers) up_next=${upNext}` });
     const ws = wsPing();
-    await sendToTextChannel(guild, next.textChannelId, `🎶 กำลังเล่น: **${next.title}** — ขอโดย ${next.requestedBy} | ping ${ws} ms | 🔊 ${state.volumePct}%`);
+    await sendToTextChannel(guild, next.textChannelId, { embeds: [
+      makeEmbed(COLORS.music)
+        .setDescription(`### 🎶  Now Playing`)
+        .addFields(
+          { name: "🎵 เพลง", value: `**${next.title}**`, inline: false },
+          { name: "👤 ขอโดย", value: next.requestedBy, inline: true },
+          { name: "🔊 Volume", value: `${state.volumePct}%`, inline: true },
+          { name: "🌐 Ping", value: `${ws} ms`, inline: true },
+          { name: "📋 ถัดไป", value: state.queue.length ? `\`${state.queue[0]?.title || "—"}\`` : "—", inline: false },
+        )
+    ]});
   } catch (e) {
     logPretty("ERROR", "play error: " + (e?.message || e));
-    await sendToTextChannel(guild, next.textChannelId, `⚠️ มีปัญหากับเพลงนี้ ข้าม: **${next?.title ?? "ไม่ทราบชื่อ"}**`);
+    await sendToTextChannel(guild, next.textChannelId, { embeds: [
+      makeEmbed(COLORS.warning)
+        .setDescription(`### ⚠️  ข้ามเพลงนี้แล้ว\nเกิดปัญหากับ **${next?.title ?? "ไม่ทราบชื่อ"}**`)
+    ]});
     state.current = null;
     await playNext(guild, textChannelId, state);
   }
@@ -1242,19 +1452,32 @@ client.on("interactionCreate", async (itx) => {
   const needsSameVC = !["help","ping", "botupdate", "np", "queue"].includes(itx.commandName);
 
   if (needsSameVC && !sameVC) {
-    return itx.reply({ content: "❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน", ephemeral: true });
+    return itx.reply({ embeds: [errorEmbed("กรุณาเข้าห้องเสียงเดียวกับบอทก่อนนะ 🎙️")], ephemeral: true });
   }
 
   const state = getGuildState(itx.guild);
 
   if (itx.commandName === "ping") {
-    await itx.reply(`\n> WebSocket: \`${Math.round(itx.client.ws.ping)} ms\`\n> RTT: \`${rtt} ms\``);
+    await itx.reply({ embeds: [
+      makeEmbed(COLORS.info)
+        .setDescription("### 🏓  Pong!")
+        .addFields(
+          { name: "🌐 WebSocket", value: `\`${Math.round(itx.client.ws.ping)} ms\``, inline: true },
+          { name: "⏱️ RTT", value: `\`${rtt} ms\``, inline: true },
+        )
+    ]});
     return;
   }
 
   if (itx.commandName === "botupdate") {
     await itx.deferReply({ ephemeral: true });
-    await runYtDlpUpdate((msg) => itx.editReply(msg));
+    await runYtDlpUpdate((msg) => itx.editReply({ embeds: [
+      msg.startsWith("✅")
+        ? successEmbed("✅  อัปเดตสำเร็จ", "yt-dlp อัปเดตเรียบร้อยแล้ว")
+        : msg.startsWith("⏳")
+        ? infoEmbed("⏳  กำลังอัปเดต", "กระบวนการอัปเดต yt-dlp กำลังทำงาน")
+        : errorEmbed(msg)
+    ], content: "" }));
     return;
   }
 
@@ -1270,7 +1493,15 @@ client.on("interactionCreate", async (itx) => {
       voiceChannelId: userVC,
       textChannelId: itx.channelId,
     });
-    await itx.editReply(`➕ เพิ่ม: **${title}**`);
+    await itx.editReply({ embeds: [
+      makeEmbed(COLORS.success)
+        .setDescription(`### ➕  เพิ่มเพลงเข้าคิวแล้ว`)
+        .addFields(
+          { name: "🎵 เพลง", value: `**${title}**`, inline: false },
+          { name: "📋 ลำดับในคิว", value: `\`#${state.queue.length}\``, inline: true },
+          { name: "👤 ขอโดย", value: `${itx.user}`, inline: true },
+        )
+    ]});
     if (!state.current) playNext(itx.guild, itx.channelId, state);
     return;
   }
@@ -1279,8 +1510,7 @@ client.on("interactionCreate", async (itx) => {
     state.skipRequested = true;
     state.player.stop(true);
     cleanupCurrentPipeline(state);
-    // Respond once to the command that the current song was skipped
-    await itx.reply("⏭️ ข้ามเพลงปัจจุบัน");
+    await itx.reply({ embeds: [successEmbed("⏭️  ข้ามเพลงแล้ว", state.queue.length ? `ถัดไป: **${state.queue[0]?.title || "—"}**` : "คิวหมดแล้ว")] });
     return;
   }
 
@@ -1293,47 +1523,56 @@ client.on("interactionCreate", async (itx) => {
     cleanupCurrentPipeline(state);
     const vc = getVoiceConnection(itx.guild.id);
     if (vc) vc.destroy();
-    await itx.reply("🛑 หยุดและล้างคิวแล้ว");
+    await itx.reply({ embeds: [successEmbed("🛑  หยุดเพลงแล้ว", "ล้างคิวและออกจากห้องเสียงเรียบร้อย")] });
     return;
   }
 
   if (itx.commandName === "pause") {
     state.player.pause();
-    await itx.reply("⏸️ หยุดชั่วคราว");
+    await itx.reply({ embeds: [infoEmbed("⏸️  หยุดชั่วคราว", "พิมพ์ `/resume` เพื่อเล่นต่อ")] });
     return;
   }
 
   if (itx.commandName === "resume") {
     state.player.unpause();
-    await itx.reply("▶️ เล่นต่อ");
+    await itx.reply({ embeds: [successEmbed("▶️  เล่นต่อแล้ว", `กำลังเล่น: **${state.current?.title || "—"}**`)] });
     return;
   }
 
   if (itx.commandName === "np") {
-    if (!state.current) return itx.reply("ℹ️ ยังไม่มีเพลงกำลังเล่น");
-    const embed = new EmbedBuilder()
-      .setTitle("Now Playing")
-      .setDescription(`**${state.current.title}**\nขอโดย: ${state.current.requestedBy}`)
+    if (!state.current) return itx.reply({ embeds: [infoEmbed("🎵  ไม่มีเพลงกำลังเล่น", "ใช้ `/play query:<ชื่อเพลง>` เพื่อเริ่มเล่น")] });
+    const embed = makeEmbed(COLORS.music)
+      .setDescription(`### 🎶  Now Playing`)
       .addFields(
-        { name: "คิวที่เหลือ", value: String(state.queue.length), inline: true },
-        { name: "Volume", value: `${state.volumePct}%`, inline: true },
-        { name: "Loop", value: state.loopMode === "off" ? "ปิด" : (state.loopMode === "track" ? "วนเพลง" : "วนคิว"), inline: true }
+        { name: "🎵 เพลง", value: `**${state.current.title}**`, inline: false },
+        { name: "👤 ขอโดย", value: state.current.requestedBy, inline: true },
+        { name: "🔊 ระดับเสียง", value: `${state.volumePct}%`, inline: true },
+        { name: "🔁 Loop", value: loopLabel(state.loopMode), inline: true },
+        { name: "📋 คิวที่เหลือ", value: `${state.queue.length} เพลง`, inline: true },
       );
     return itx.reply({ embeds: [embed] });
   }
 
   if (itx.commandName === "queue") {
-    if (!state.queue.length) return itx.reply("📭 คิวว่าง");
-    const lines = state.queue.slice(0, 10).map((x, i) => `\`${i+1}.\` ${x.title} — *${x.requestedBy}*`);
-    const more = state.queue.length > 10 ? `\n…และอีก ${state.queue.length - 10} เพลง` : "";
-    const loopLabel = state.loopMode === "off" ? "ปิด" : (state.loopMode === "track" ? "วนเพลง" : "วนคิว");
-    return itx.reply(`🎼 **คิวเพลง (${state.queue.length})** — Loop: **${loopLabel}**\n${lines.join("\n")}${more}`);
+    if (!state.queue.length) return itx.reply({ embeds: [infoEmbed("📭  คิวว่างเปล่า", "ใช้ `/play query:<ชื่อเพลง>` เพื่อเพิ่มเพลง")] });
+    const lines = state.queue.slice(0, 10).map((x, i) => `\`${String(i+1).padStart(2,"0")}.\` **${x.title}**\n　　👤 ${x.requestedBy}`).join("\n");
+    const more = state.queue.length > 10 ? `\n*… และอีก **${state.queue.length - 10}** เพลง*` : "";
+    return itx.reply({ embeds: [
+      makeEmbed(COLORS.queue)
+        .setDescription(`### 📋  คิวเพลง`)
+        .addFields(
+          { name: `รายการ (${Math.min(state.queue.length, 10)}/${state.queue.length})`, value: lines + more, inline: false },
+          { name: "🔁 Loop", value: loopLabel(state.loopMode), inline: true },
+          { name: "🎵 กำลังเล่น", value: state.current ? `**${state.current.title}**` : "—", inline: true },
+        )
+    ]});
   }
 
   if (itx.commandName === "volume") {
     const v = itx.options.getInteger("value");
     setVolumePct(state, v);
-    return itx.reply(`🔊 ปรับความดังเป็น **${state.volumePct}%**`);
+    const bar = "█".repeat(Math.round(Math.min(state.volumePct, 200) / 20)) + "░".repeat(10 - Math.round(Math.min(state.volumePct, 200) / 20));
+    return itx.reply({ embeds: [successEmbed("🔊  ปรับระดับเสียงแล้ว", `\`${bar}\` **${state.volumePct}%**`)] });
   }
 
   if (itx.commandName === "playlist") {
@@ -1343,7 +1582,7 @@ client.on("interactionCreate", async (itx) => {
 
     const items = await fetchPlaylistEntries(q, limit);
     if (!items.length) {
-      return itx.editReply("❌ หาเพลงในเพลย์ลิสต์/ผลค้นหาไม่เจอ");
+      return itx.editReply({ embeds: [errorEmbed("ไม่พบเพลงในเพลย์ลิสต์หรือผลการค้นหา")] });
     }
 
     for (const { title, url } of items) {
@@ -1358,36 +1597,44 @@ client.on("interactionCreate", async (itx) => {
     }
 
     const preview = items.slice(0, 5).map((x, i) => `\`${i + 1}.\` ${x.title}`).join("\n");
-    const more = items.length > 5 ? `\n…และอีก ${items.length - 5} เพลง` : "";
-    await itx.editReply(`📚 เพิ่มจาก **playlist/search** ทั้งหมด **${items.length}** เพลง\n${preview}${more}`);
+    const more = items.length > 5 ? `\n*… และอีก ${items.length - 5} เพลง*` : "";
+    await itx.editReply({ embeds: [
+      makeEmbed(COLORS.queue)
+        .setDescription(`### 📚  โหลด Playlist สำเร็จ`)
+        .addFields(
+          { name: "🎶 เพลงทั้งหมด", value: `**${items.length} เพลง**`, inline: true },
+          { name: "👤 ขอโดย", value: `${itx.user}`, inline: true },
+          { name: "📋 รายการแรก", value: `${preview}${more}`, inline: false },
+        )
+    ]});
 
     if (!state.current) playNext(itx.guild, itx.channelId, state);
     return;
   }
 
   if (itx.commandName === "remove") {
-    if (!state.queue.length) return itx.reply("📭 คิวว่าง ไม่มีอะไรให้ลบ");
+    if (!state.queue.length) return itx.reply({ embeds: [infoEmbed("📭  คิวว่างเปล่า", "ไม่มีเพลงในคิวให้ลบ")] });
     const index = itx.options.getInteger("index");
     if (index < 1 || index > state.queue.length) {
-      return itx.reply({ content: "❌ ลำดับไม่ถูกต้อง", ephemeral: true });
+      return itx.reply({ embeds: [errorEmbed(`หมายเลขลำดับไม่ถูกต้อง (มีอยู่ ${state.queue.length} เพลง)`)], ephemeral: true });
     }
     const [removed] = state.queue.splice(index - 1, 1);
-    return itx.reply(`🗑️ ลบเพลงลำดับ ${index}: **${removed.title}**`);
+    return itx.reply({ embeds: [successEmbed("🗑️  ลบเพลงออกจากคิวแล้ว", `**${removed.title}**`)] });
   }
 
   if (itx.commandName === "shuffle") {
-    if (state.queue.length < 2) return itx.reply("ℹ️ คิวมีน้อยกว่าสองเพลง ไม่ต้องสลับ");
+    if (state.queue.length < 2) return itx.reply({ embeds: [infoEmbed("🔀  ไม่สามารถสุ่มได้", "ต้องมีเพลงในคิวอย่างน้อย 2 เพลง")] });
     for (let i = state.queue.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [state.queue[i], state.queue[j]] = [state.queue[j], state.queue[i]];
     }
-    return itx.reply("🔀 สลับคิวเรียบร้อย");
+    return itx.reply({ embeds: [successEmbed("🔀  สุ่มคิวแล้ว", `สลับลำดับ **${state.queue.length} เพลง** เรียบร้อย`)] });
   }
 
   if (itx.commandName === "loop") {
     const mode = itx.options.getString("mode");
     state.loopMode = mode;
-    return itx.reply(`🔁 ตั้งค่า loop เป็น **${mode === "off" ? "ปิด" : mode === "track" ? "วนเพลงปัจจุบัน" : "วนทั้งคิว"}**`);
+    return itx.reply({ embeds: [successEmbed("🔁  ตั้งค่า Loop แล้ว", `โหมดปัจจุบัน: **${loopLabel(mode)}**`)] });
   }
 });
 

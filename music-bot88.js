@@ -1,52 +1,6 @@
 // index.js
 require("dotenv").config();
 
-// --- Spotify link support (no direct Spotify audio streaming) ---
-// Accept Spotify TRACK/EPISODE URLs/URIs and convert to a YouTube search query.
-function isSpotifyUrl(s){
-  return typeof s === "string" && (s.includes("open.spotify.com/") || s.startsWith("spotify:"));
-}
-function normalizeSpotifyUrl(input){
-  if (!input || typeof input !== "string") return null;
-  const m = input.match(/^spotify:(track|album|playlist|episode):([A-Za-z0-9]+)$/);
-  if (m) return `https://open.spotify.com/${m[1]}/${m[2]}`;
-  return input.replace(/^<|>$/g, "");
-}
-function spotifyKind(url){
-  const u = normalizeSpotifyUrl(url);
-  if (!u) return null;
-  const m = u.match(/open\.spotify\.com\/(track|album|playlist|episode)\/([A-Za-z0-9]+)/i);
-  return m ? m[1].toLowerCase() : null;
-}
-async function fetchJsonWithTimeout(url, ms=8000){
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal, headers: { "Accept": "application/json" } });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } finally {
-    clearTimeout(t);
-  }
-}
-async function spotifyTitle(input){
-  const url = normalizeSpotifyUrl(input);
-  const kind = spotifyKind(url);
-  if (!kind) return null;
-  const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`;
-  const data = await fetchJsonWithTimeout(oembedUrl, 8000);
-  return data?.title ? String(data.title) : null;
-}
-async function spotifyTrackToSearchQuery(input){
-  const url = normalizeSpotifyUrl(input);
-  const kind = spotifyKind(url);
-  if (kind !== "track" && kind !== "episode") return null;
-  const t = await spotifyTitle(url);
-  if (!t) return null;
-  return `${t} audio`;
-}
-// --- end Spotify support ---
-
 /* Clamp negative or invalid timer delays to 1 ms to avoid TimeoutNegativeWarning. */
 
 (() => {
@@ -96,8 +50,9 @@ const config = {
   // Whether to automatically update yt-dlp at midnight local time
   ytdlpAutoUpdate: (process.env.YTDLP_AUTO_UPDATE || "true").toLowerCase() === "true",
 
-  // Hard cap for /playlist to prevent excessive memory/time usage
-  playlistHardCap: Math.max(1, Number(process.env.PLAYLIST_HARD_CAP) || 5000),
+  // Cache yt-dlp resolve results (speeds up repeated plays / retries)
+  ytdlpCacheTtlMs: Math.max(0, Number(process.env.YTDLP_CACHE_TTL_MS) || 120000),
+  ytdlpCacheMax: Math.max(10, Number(process.env.YTDLP_CACHE_MAX) || 100),
 
   // ===== Audio quality controls (.env) =====
   audioChannels: Math.min(2, Math.max(1, Number(process.env.AUDIO_CHANNELS) || 2)),
@@ -208,7 +163,7 @@ const {
   createAudioResource,
   AudioPlayerStatus,
   getVoiceConnection,
-  demuxProbe,
+  StreamType,
 } = require("@discordjs/voice");
 
 try { require("@snazzah/davey"); } catch { /* optional */ }
@@ -224,7 +179,7 @@ let FFMPEG = null;
 let FFMPEG_AVAILABLE = false;
 // Determine the ffmpeg binary. If the user specifies a custom path via
 // configuration, prefer that. Otherwise fall back to ffmpeg-static and
-// finally to the system ffmapeg.
+// finally to the system ffmpeg.
 try {
   if (config.ffmpegPath) {
     // Use the explicit path provided in config
@@ -250,7 +205,6 @@ function ytdlpOpts(extra = {}) {
     "fragment-retries": "infinite",
     // Respect configured IPv4 forcing
     "force-ipv4": config.ytdlpForceIpv4,
-    "js-runtimes": "node",
   };
   if (config.cookieFile) base.cookies = config.cookieFile;
   return { ...base, ...extra };
@@ -397,254 +351,8 @@ function scheduleDailyBangkokMidnight(fn){
 }
 
 // Discord client
-const client = new Client({ intents: [
-  GatewayIntentBits.Guilds,
-  GatewayIntentBits.GuildVoiceStates,
-  GatewayIntentBits.GuildMessages,
-  GatewayIntentBits.MessageContent,
-] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 _clientForPing = client;
-
-// --- Prefix commands (e.g., n!play ...) ---
-const BOT_PREFIX = (process.env.BOT_PREFIX || process.env.COMMAND_PREFIX || "n!").trim();
-// NOTE: avoid process.env.PREFIX because Termux sets PREFIX=/data/... by default.
-
-function buildHelpEmbedPrefix(){
-  const p = BOT_PREFIX;
-  return new EmbedBuilder()
-    .setTitle("🎵 วิธีใช้บอทเพลง (Prefix)")
-    .setDescription(`พิมพ์คำสั่งด้วย **${p}** ตัวอย่าง: \`${p}play ลิงก์หรือชื่อเพลง\``)
-    .addFields(
-      { name: "▶️ เล่นเพลง / เพิ่มคิว", value: `• \`${p}play <ชื่อเพลง|ลิงก์>\`\n• รองรับ Spotify track: \`${p}play https://open.spotify.com/track/...\`` },
-      { name: "📚 เพิ่มเป็นชุด (YouTube)", value: `• \`${p}playlist <ลิงก์หรือคำค้น> --limit 100\`\n• ไม่ใส่ --limit = เพิ่มทั้งหมด` },
-      { name: "🎛️ ควบคุมเพลง", value: `• \`${p}queue\` ดูคิว\n• \`${p}np\` เพลงที่กำลังเล่น\n• \`${p}skip\` ข้าม\n• \`${p}stop\` หยุด+ล้างคิว\n• \`${p}pause\` / \`${p}resume\`\n• \`${p}shuffle\`\n• \`${p}remove <เลข>\`` },
-      { name: "🔁 วน / 🔊 เสียง", value: `• \`${p}loop off|track|queue\`\n• \`${p}volume 0-10000\`` },
-      { name: "🧰 ระบบ", value: `• \`${p}ping\`\n• \`${p}botupdate\`` },
-    )
-    .setFooter({ text: "Tip: คำสั่ง+ลิงก์ ควรพิมพ์ในบรรทัดเดียว" });
-}
-
-function buildHelpEmbedSlash(){
-  return new EmbedBuilder()
-    .setTitle("🎵 วิธีใช้บอทเพลง (Slash)")
-    .setDescription("ใช้คำสั่งแบบ **/** ได้เลย เช่น `/play query:<ชื่อเพลง/ลิงก์>`")
-    .addFields(
-      { name: "▶️ เล่นเพลง / เพิ่มคิว", value: "• `/play query:<ชื่อเพลง|ลิงก์>`\n• รองรับ Spotify track (ใส่ลิงก์ใน query ได้)" },
-      { name: "📚 เพิ่มเป็นชุด (YouTube)", value: "• `/playlist query:<ลิงก์หรือคำค้น> limit:<จำนวน>`\n• ไม่ใส่ limit = เพิ่มทั้งหมด" },
-      { name: "🎛️ ควบคุมเพลง", value: "• `/queue` ดูคิว\n• `/np` เพลงที่กำลังเล่น\n• `/skip` ข้าม\n• `/stop` หยุด+ล้างคิว\n• `/pause` / `/resume`\n• `/shuffle`\n• `/remove index:<เลข>`" },
-      { name: "🔁 วน / 🔊 เสียง", value: "• `/loop mode:<off|track|queue>`\n• `/volume value:<0-10000>`" },
-      { name: "🧰 ระบบ", value: "• `/ping`\n• `/botupdate`" },
-    )
-    .setFooter({ text: "Tip: ถ้าใช้พิมพ์เร็วๆ แนะนำ n!help (prefix)" });
-}
-
-function parseLimitFromArgs(tokens){
-  let limit = null;
-  const out = [];
-  for (let i=0;i<tokens.length;i++){
-    const t = tokens[i];
-    if (t === "--limit" || t === "limit" || t === "-l"){
-      const n = parseInt(tokens[i+1], 10);
-      if (!Number.isNaN(n)) limit = n;
-      i++;
-      continue;
-    }
-    out.push(t);
-  }
-  return { limit, tokens: out };
-}
-
-async function replyAck(msg, text){
-  try { return await msg.channel.send({ content: text }); } catch { return null; }
-}
-
-client.on("messageCreate", async (msg) => {
-  try {
-    if (!msg.guild) return;
-    if (msg.author?.bot) return;
-
-    const raw = (msg.content || "").trim();
-    if (!raw.startsWith(BOT_PREFIX)) return;
-
-    const body = raw.slice(BOT_PREFIX.length).trim();
-    if (!body) return;
-
-    const parts = body.split(/\s+/);
-    const cmdRaw = (parts.shift() || "").toLowerCase();
-
-    const cmd = ({
-      p: "play",
-      q: "queue",
-      now: "np",
-      next: "skip",
-      s: "skip",
-      st: "stop",
-      vol: "volume",
-      upd: "botupdate",
-      h: "help",
-      help: "help",
-    })[cmdRaw] || cmdRaw;
-
-    const allowed = new Set(["help","play","playlist","skip","stop","pause","resume","queue","np","remove","shuffle","loop","volume","ping","botupdate"]);
-    if (!allowed.has(cmd)) {
-      return msg.reply(`ไม่รู้จักคำสั่งนี้: \`${BOT_PREFIX}${cmdRaw}\`\nลอง: ${Array.from(allowed).map(c=>`\`${BOT_PREFIX}${c}\``).join(" ")}`);
-    }
-
-    if (cmd === "help") {
-      return msg.reply({ embeds: [buildHelpEmbedPrefix()] });
-    }
-
-    // Prepare option values similar to slash
-    let q = null, limit = null, index = null, mode = null, value = null;
-
-    if (cmd === "play") {
-      q = parts.join(" ").trim();
-      if (!q) return msg.reply(`ใส่คำค้น/ลิงก์ด้วยนะ เช่น \`${BOT_PREFIX}play คำค้น\` หรือ \`${BOT_PREFIX}play https://open.spotify.com/track/...\``);
-    } else if (cmd === "playlist") {
-      const parsed = parseLimitFromArgs(parts);
-      limit = parsed.limit;
-      q = parsed.tokens.join(" ").trim();
-      if (!q) return msg.reply(`ใส่คำค้น/ลิงก์ playlist ด้วยนะ เช่น \`${BOT_PREFIX}playlist <url> --limit 100\``);
-    } else if (cmd === "remove") {
-      index = parseInt(parts[0], 10);
-      if (Number.isNaN(index) || index < 1) return msg.reply(`ใส่เลขลำดับเพลงที่จะลบ เช่น \`${BOT_PREFIX}remove 3\``);
-    } else if (cmd === "loop") {
-      mode = (parts[0] || "").toLowerCase();
-      if (!mode) return msg.reply(`ใส่โหมด: off|track|queue เช่น \`${BOT_PREFIX}loop track\``);
-    } else if (cmd === "volume") {
-      value = parseInt(parts[0], 10);
-      if (Number.isNaN(value)) return msg.reply(`ใส่ค่าความดังเป็นตัวเลข เช่น \`${BOT_PREFIX}volume 700\``);
-    }
-
-    // Voice channel check (same as slash)
-    const me = msg.guild.members.me;
-    const userVC = msg.member?.voice?.channelId;
-    const botVC = me?.voice?.channelId;
-    const sameVC = userVC && (!botVC || botVC === userVC);
-    const needsSameVC = !["help","ping", "botupdate", "np", "queue"].includes(cmd);
-    if (needsSameVC && !sameVC) {
-      return msg.reply("❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน");
-    }
-
-    // Acknowledge receipt
-    if (cmd === "play") await replyAck(msg, "🎵 รับคำสั่งแล้ว กำลังเริ่มเพลง...");
-    else if (cmd === "playlist") await replyAck(msg, "📚 รับคำสั่งแล้ว กำลังเพิ่มเพลงเข้าคิว...");
-    else if (cmd === "volume") await replyAck(msg, `🔊 รับคำสั่งแล้ว กำลังปรับระดับเสียงเป็น ${value}...`);
-    else if (cmd === "skip") await replyAck(msg, "⏭️ รับคำสั่งแล้ว กำลังข้ามเพลง...");
-    else if (cmd === "stop") await replyAck(msg, "⏹️ รับคำสั่งแล้ว กำลังหยุดและล้างคิว...");
-    else if (cmd === "pause") await replyAck(msg, "⏸️ รับคำสั่งแล้ว กำลังหยุดชั่วคราว...");
-    else if (cmd === "resume") await replyAck(msg, "▶️ รับคำสั่งแล้ว กำลังเล่นต่อ...");
-    else if (cmd === "ping") await replyAck(msg, "🏓 รับคำสั่งแล้ว กำลังเช็ค ping...");
-    else if (cmd === "botupdate") await replyAck(msg, "🛠️ รับคำสั่งแล้ว กำลังอัปเดต yt-dlp...");
-
-    // Execute using the same internal functions as slash
-    const state = getGuildState(msg.guild);
-
-    if (cmd === "ping") {
-      return msg.reply(`\n> WebSocket: \`${Math.round(msg.client.ws.ping)} ms\``);
-    }
-
-    if (cmd === "botupdate") {
-      const m = await msg.reply("🛠️ กำลังอัปเดต yt-dlp...");
-      await runYtDlpUpdate((t) => m.edit(t));
-      return;
-    }
-
-    if (cmd === "play") {
-      const title = await getTitle(q);
-      state.queue.push({
-        title,
-        source: q,
-        requestedBy: msg.author.tag,
-        guild: msg.guild,
-        voiceChannelId: userVC,
-        textChannelId: msg.channelId,
-      });
-      await msg.reply(`➕ เพิ่ม: **${title}**`);
-      if (!state.current) playNext(msg.guild, msg.channelId, state);
-      return;
-    }
-
-    if (cmd === "playlist") {
-      const items = await fetchPlaylistEntries(q, limit);
-      if (!items.length) return msg.reply("❌ หาเพลงในเพลย์ลิสต์/ผลค้นหาไม่เจอ");
-      for (const { title, url } of items) {
-        state.queue.push({
-          title,
-          source: url,
-          requestedBy: msg.author.tag,
-          guild: msg.guild,
-          voiceChannelId: userVC,
-          textChannelId: msg.channelId,
-        });
-      }
-      await msg.reply(`➕ เพิ่มทั้งสิ้น **${items.length}** เพลง`);
-      if (!state.current) playNext(msg.guild, msg.channelId, state);
-      return;
-    }
-
-    if (cmd === "skip") {
-      state.skipRequested = true;
-      state.player.stop(true);
-      cleanupCurrentPipeline(state);
-      return msg.reply("⏭️ ข้ามเพลงปัจจุบัน");
-    }
-
-    if (cmd === "stop") {
-      state.queue = [];
-      state.current = null;
-      state.loopMode = "off";
-      state.skipRequested = false;
-      state.player.stop(true);
-      cleanupCurrentPipeline(state);
-      const vc = getVoiceConnection(msg.guild.id);
-      if (vc) vc.destroy();
-      return msg.reply("🛑 หยุดและล้างคิวแล้ว");
-    }
-
-    if (cmd === "pause") { state.player.pause(); return msg.reply("⏸️ หยุดชั่วคราว"); }
-    if (cmd === "resume") { state.player.unpause(); return msg.reply("▶️ เล่นต่อ"); }
-
-    if (cmd === "np") {
-      if (!state.current) return msg.reply("ℹ️ ยังไม่มีเพลงกำลังเล่น");
-      return msg.reply(`🎶 กำลังเล่น: **${state.current.title}**\nขอโดย: ${state.current.requestedBy}`);
-    }
-
-    if (cmd === "queue") {
-      if (!state.queue.length) return msg.reply("📭 คิวว่าง");
-      const lines = state.queue.slice(0, 10).map((x, i) => `\`${i+1}.\` ${x.title} — *${x.requestedBy}*`);
-      const more = state.queue.length > 10 ? `\n…และอีก ${state.queue.length - 10} เพลง` : "";
-      return msg.reply(`🎼 **คิวเพลง (${state.queue.length})**\n${lines.join("\n")}${more}`);
-    }
-
-    if (cmd === "volume") {
-      setVolumePct(state, value);
-      return msg.reply(`🔊 ปรับความดังเป็น **${state.volumePct}%**`);
-    }
-
-    if (cmd === "shuffle") {
-      shuffleArray(state.queue);
-      return msg.reply("🔀 สุ่มคิวแล้ว");
-    }
-
-    if (cmd === "remove") {
-      if (index > state.queue.length) return msg.reply("❌ เลขเกินจำนวนในคิว");
-      const [rm] = state.queue.splice(index - 1, 1);
-      return msg.reply(`🗑️ ลบ: **${rm?.title || "รายการ"}**`);
-    }
-
-    if (cmd === "loop") {
-      if (!["off","track","queue"].includes(mode)) return msg.reply("❌ โหมดต้องเป็น off|track|queue");
-      state.loopMode = mode;
-      return msg.reply(`🔁 ตั้งค่า loop เป็น **${mode}**`);
-    }
-
-  } catch (e) {
-    console.error(e);
-    try { await msg.reply("เกิดข้อผิดพลาดตอนอ่านคำสั่ง (prefix)"); } catch {}
-  }
-});
-
 
 // Slash command definitions
 const commands = [
@@ -658,11 +366,11 @@ const commands = [
   new SlashCommandBuilder().setName("botupdate").setDescription("อัปเดต yt-dlp"),
   new SlashCommandBuilder().setName("np").setDescription("ตอนนี้กำลังเล่นเพลงอะไร"),
   new SlashCommandBuilder().setName("queue").setDescription("ดูคิวเพลงที่เหลือ"),
-  new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-10000)")
-    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-10000)").setRequired(true).setMinValue(0).setMaxValue(10000)),
+  new SlashCommandBuilder().setName("volume").setDescription("ปรับความดัง (0-1000)")
+    .addIntegerOption(o => o.setName("value").setDescription("เปอร์เซ็นต์ (0-1000)").setRequired(true).setMinValue(0).setMaxValue(1000)),
   new SlashCommandBuilder().setName("playlist").setDescription("เพิ่มเพลงเป็นชุดจาก YouTube (playlist หรือผลค้นหา)")
     .addStringOption(o => o.setName("query").setDescription("ลิงก์ playlist หรือคำค้น").setRequired(true))
-    .addIntegerOption(o => o.setName("limit").setDescription("จำนวนสูงสุด (ถ้าไม่ใส่ = ทั้ง playlist) (1-5000)").setMinValue(1).setMaxValue(5000)),
+    .addIntegerOption(o => o.setName("limit").setDescription("จำนวนสูงสุด (1-50)").setMinValue(1).setMaxValue(50)),
   new SlashCommandBuilder().setName("remove").setDescription("ลบเพลงจากคิวตามลำดับ")
     .addIntegerOption(o => o.setName("index").setDescription("ลำดับเพลงตาม /queue").setRequired(true).setMinValue(1)),
   new SlashCommandBuilder().setName("shuffle").setDescription("สลับลำดับคิวแบบสุ่ม"),
@@ -677,7 +385,6 @@ const commands = [
           { name: "วนทั้งคิว", value: "queue" },
         )
     ),
-  new SlashCommandBuilder().setName("help").setDescription("แสดงวิธีใช้และคำสั่งทั้งหมด"),
 ].map(c => c.toJSON());
 
 // Guild queue and player state
@@ -736,40 +443,22 @@ function ensureVC(guild, channelId, state){
 function cleanupCurrentPipeline(state){
   if (!state.currentPipe) return;
   try {
-    // Destroy the audio stream if present
-    try { state.currentPipe.stream?.destroy?.(); } catch {}
-    // Kill the ffmpeg process
-    try { state.currentPipe.ff?.kill?.("SIGKILL"); } catch {}
-    // If there is a helper process (e.g. yt-dlp for TikTok), kill it too
-    try { state.currentPipe.helper?.kill?.("SIGKILL"); } catch {}
-  } catch (e) {
-    swallowPipeError(e);
-  } finally {
-    state.currentPipe = null;
-  }
+    try { state.currentPipe.stream.destroy(); } catch {}
+    try { state.currentPipe.ff.kill("SIGKILL"); } catch {}
+  } catch (e) { swallowPipeError(e); }
+  finally { state.currentPipe = null; }
 }
 function isUrl(s){ try { new URL(s); return true; } catch { return false; } }
 
 // yt-dlp helper functions
 async function getTitle(input){
   try {
-    if (isSpotifyUrl(input)) {
-      const t = await spotifyTitle(input);
-      if (t) return t;
-    }
-
     const info = await ytdlp(input, ytdlpOpts({ dumpSingleJson: true }));
     if (info?.title) return info.title;
   } catch {}
   return input;
 }
 async function resolveFirstVideoUrl(query){
-  if (isSpotifyUrl(query)) {
-    const kind = spotifyKind(query);
-    if (kind === "album" || kind === "playlist") return null;
-    const q2 = await spotifyTrackToSearchQuery(query);
-    if (q2) query = q2;
-  }
   if (isUrl(query)) return query;
   try {
     const out = await ytdlp(`ytsearch1:${query}`, ytdlpOpts({ dumpSingleJson: true }));
@@ -779,12 +468,44 @@ async function resolveFirstVideoUrl(query){
     return null;
   }
 }
-async function getDirectAudioUrlAndHeaders(input) {
-  const info = await ytdlp(input, ytdlpOpts({ dumpSingleJson: true, f: "bestaudio/best" }));
-  const url = info?.url;
-  const headers = info?.http_headers || {};
+
+// Resolve a query (url or text) directly into a playable media URL + headers.
+// This collapses the old two-step flow (ytsearch -> webpage_url -> media url)
+// into a single yt-dlp call, which noticeably reduces startup delay.
+async function resolveToDirectAudio(input) {
+  // Tiny TTL cache to avoid hitting yt-dlp repeatedly for the same query.
+  // Particularly helpful when users spam /play, on retries, or loop mode.
+  if (!global.__YTDLP_RESOLVE_CACHE) global.__YTDLP_RESOLVE_CACHE = new Map();
+  const cache = global.__YTDLP_RESOLVE_CACHE;
+  const now = Date.now();
+  const cached = cache.get(input);
+  if (cached && cached.exp > now) return cached.val;
+
+  const target = isUrl(input) ? input : `ytsearch1:${input}`;
+  const info = await ytdlp(target, ytdlpOpts({
+    dumpSingleJson: true,
+    // ask yt-dlp for best audio format directly
+    f: "bestaudio/best",
+  }));
+
+  // When using ytsearch, yt-dlp may return an object with entries[0]
+  const picked = (info?.entries && Array.isArray(info.entries)) ? info.entries[0] : info;
+  const url = picked?.url;
+  const headers = picked?.http_headers || info?.http_headers || {};
+  const title = picked?.title || info?.title || input;
+  const pageUrl = picked?.webpage_url || picked?.original_url || (isUrl(input) ? input : null);
+
   if (!url) throw new Error("yt-dlp did not return media url");
-  return { url, headers };
+  const val = { url, headers, title, pageUrl };
+  if (config.ytdlpCacheTtlMs > 0) {
+    // crude size cap: if too big, drop oldest inserted item
+    if (cache.size >= config.ytdlpCacheMax) {
+      const firstKey = cache.keys().next().value;
+      if (firstKey !== undefined) cache.delete(firstKey);
+    }
+    cache.set(input, { val, exp: now + config.ytdlpCacheTtlMs });
+  }
+  return val;
 }
 function buildFfmpegHeadersString(h) {
   const merged = {
@@ -896,140 +617,13 @@ function spawnFfmpegFromDirectUrl(url, headersStr) {
   return ff;
 }
 
-// Spawn a TikTok pipeline using yt-dlp piping directly into ffmpeg. This avoids
-// fetching the TikTok media URL via ffmpeg (which often results in 403
-// Forbidden responses). Instead, yt-dlp is responsible for downloading the
-// media, and ffmpeg consumes the stream from stdin. The returned object
-// includes the ffmpeg process, its stdout stream, and the yt-dlp helper
-// process for cleanup.
-function spawnTikTokPipe(pageUrl) {
-  if (!FFMPEG_AVAILABLE) {
-    throw new Error("ffmpeg binary not available");
-  }
-  // Build yt-dlp CLI arguments. We respect configuration options such as
-  // force IPv4 and cookie file. The output is written to stdout ("-") so
-  // ffmpeg can read it from a pipe.
-  const ytdlpArgs = [];
-  // use force-ipv4 if configured
-  if (config.ytdlpForceIpv4) {
-    ytdlpArgs.push("--force-ipv4");
-  }
-  // use cookie file if provided
-  if (config.cookieFile) {
-    ytdlpArgs.push("--cookies", config.cookieFile);
-  }
-  // Basic resilient settings
-  ytdlpArgs.push(
-    "--no-check-certificates",
-    "--retries", "infinite",
-    "--fragment-retries", "infinite",
-    "-f", "ba",
-    "-o", "-",
-    "--js-runtimes", "node",
-    pageUrl
-  );
-  // Spawn yt-dlp process
-  const helper = spawn("yt-dlp", ytdlpArgs, {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  helper.on("error", (e) => logPretty("ERROR", "yt-dlp spawn error: " + (e?.message || e)));
-  helper.stderr.on("error", swallowPipeError);
-  helper.stderr.on("data", (d) => {
-    try {
-      logPretty("LOG", "[yt-dlp] " + d.toString().trim());
-    } catch {}
-  });
-  // Build ffmpeg arguments based on our audio configuration. Unlike
-  // spawnFfmpegFromDirectUrl, we do not include reconnect flags because
-  // yt-dlp is handling network access. We still honor low‑latency and
-  // audio quality settings.
-  const a = [];
-  a.push("-loglevel", "info", "-hide_banner");
-  if (config.ffmpegLowLatency) {
-    a.push(
-      "-fflags", "+nobuffer",
-      "-flags", "low_delay",
-      "-analyzeduration", String(config.ffmpegInputAnalyzeMs * 1000),
-      "-probesize", "32k"
-    );
-  } else {
-    const us = Math.max(0, config.ffmpegInputAnalyzeMs) * 1000;
-    a.push("-analyzeduration", String(us), "-probesize", "256k");
-  }
-  // Input from stdin (pipe)
-  a.push("-i", "pipe:0");
-  // Drop any video
-  a.push("-vn");
-  // Channels and sample rate
-  a.push("-ac", String(config.audioChannels));
-  a.push("-ar", String(config.audioSampleRate));
-  // Optional audio filter
-  const afChain = (config.audioFilter || "").trim();
-  if (afChain) {
-    a.push("-af", afChain);
-  }
-  // Opus encoding settings
-  a.push("-c:a", "libopus");
-  a.push("-b:a", config.opusBitrate);
-  if (config.opusVbr === "off") {
-    a.push("-vbr", "off");
-  } else if (config.opusVbr === "constrained") {
-    a.push("-vbr", "constrained");
-  } else {
-    a.push("-vbr", "on");
-  }
-  if (["audio", "voip", "lowdelay"].includes(config.opusApplication)) {
-    a.push("-application", config.opusApplication);
-  }
-  const fd = Number(config.opusFrameDuration);
-  if ([2.5, 5, 10, 20, 40, 60].includes(fd)) {
-    a.push("-frame_duration", String(fd));
-  }
-  const cx = Number(config.opusComplexity);
-  if (Number.isFinite(cx) && cx >= 0 && cx <= 10) {
-    a.push("-compression_level", String(cx));
-  }
-  if (config.ffmpegExtraArgs && config.ffmpegExtraArgs.trim()) {
-    a.push(...config.ffmpegExtraArgs.trim().split(/\s+/));
-  }
-  a.push("-f", "ogg", "pipe:1");
-  // Spawn ffmpeg process
-  const ff = spawn(FFMPEG || "ffmpeg", a, {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  ff.on("error", (e) => logPretty("ERROR", "ffmpeg(tiktok) spawn error: " + (e?.message || e)));
-  ff.stdout.on("error", swallowPipeError);
-  ff.stderr.on("error", swallowPipeError);
-  ff.stderr.on("data", (d) => {
-    try {
-      logPretty("LOG", "[ffmpeg(tiktok)] " + d.toString().trim());
-    } catch {}
-  });
-  // Pipe yt-dlp stdout into ffmpeg stdin
-  helper.stdout.pipe(ff.stdin);
-  return { ff, stream: ff.stdout, helper };
-}
-
 // Playlist helper: fetch entries list
 // คืนอาเรย์ [{ title, url }] จากลิงก์ playlist/mix หรือจากคำค้น (ytsearchN:)
-async function fetchPlaylistEntries(input, limit = null) {
-  // If limit is omitted:
-  // - URL playlist: fetch ALL items (still protected by playlistHardCap)
-  // - search text: default to 25 results
-  const isInputUrl = isUrl(input);
-
-  const hardCap = Math.max(1, Number(config.playlistHardCap) || 5000);
-
-  let max;
-  if (limit === null || limit === undefined) {
-    max = isInputUrl ? Infinity : 25;
-  } else {
-    max = Math.min(Math.max(Number(limit) || 25, 1), hardCap);
-  }
-
+async function fetchPlaylistEntries(input, limit = 25) {
+  const max = Math.min(Math.max(Number(limit) || 25, 1), 50);
   const entries = [];
   try {
-    if (isInputUrl) {
+    if (isUrl(input)) {
       const info = await ytdlp(input, ytdlpOpts({
         dumpSingleJson: true,
         "yes-playlist": true,
@@ -1037,20 +631,16 @@ async function fetchPlaylistEntries(input, limit = null) {
       }));
       const arr = info?.entries || [];
       for (const e of arr) {
-        if (Number.isFinite(max) && entries.length >= max) break;
-        // Safety: even if max is Infinity, keep a hard cap to prevent runaway memory usage
-        if (entries.length >= hardCap) break;
-
+        if (entries.length >= max) break;
         const url = e?.webpage_url || e?.url || (e?.id ? `https://www.youtube.com/watch?v=${e.id}` : null);
         const title = e?.title || e?.id || "unknown";
         if (url) entries.push({ title, url });
       }
     } else {
-      const n = Number.isFinite(max) ? max : 25;
+      const n = max;
       const out = await ytdlp(`ytsearch${n}:${input}`, ytdlpOpts({ dumpSingleJson: true }));
       const arr = out?.entries || [];
       for (const e of arr) {
-        if (entries.length >= n) break;
         const url = e?.webpage_url || e?.url || (e?.id ? `https://www.youtube.com/watch?v=${e.id}` : null);
         const title = e?.title || e?.id || "unknown";
         if (url) entries.push({ title, url });
@@ -1059,8 +649,6 @@ async function fetchPlaylistEntries(input, limit = null) {
   } catch (err) {
     logPretty("ERROR", "fetchPlaylistEntries fail: " + (err?.message || err));
   }
-
-  if (!Number.isFinite(max)) return entries;
   return entries.slice(0, max);
 }
 
@@ -1163,41 +751,28 @@ async function startPlayback(guild, item, state) {
   // Ensure the bot is connected to the correct voice channel and subscribed to the player
   ensureVC(guild, item.voiceChannelId, state);
 
-  // Resolve the initial video/track URL; this may involve a search
-  const pageUrl = await resolveFirstVideoUrl(item.source);
-  if (!pageUrl) {
-    throw new Error("cannot resolve page url");
-  }
-
-  let pipeObj;
-  // If the URL is a TikTok link, use the yt-dlp -> ffmpeg pipe to avoid
-  // 403 errors. Otherwise, resolve a direct media URL and spawn ffmpeg as
-  // usual.
-  if (pageUrl.includes("tiktok.com") || pageUrl.includes("vt.tiktok.com")) {
-    pipeObj = spawnTikTokPipe(pageUrl);
-  } else {
-    // Retrieve a direct audio URL and associated HTTP headers for yt-dlp
-    const { url, headers } = await getDirectAudioUrlAndHeaders(pageUrl);
-    const ff = spawnFfmpegFromDirectUrl(url, buildFfmpegHeadersString(headers));
-    pipeObj = { ff, stream: ff.stdout };
-  }
-  // Maintain a reference for clean up on idle/skip (also stores helper if present)
-  state.currentPipe = pipeObj;
-  // Probe the stream to determine the correct demuxing configuration
-  const { stream, type } = await demuxProbe(pipeObj.stream);
-  // Create an audio resource for Discord with inline volume control
-  const resource = createAudioResource(stream, { inputType: type, inlineVolume: true });
+  // Resolve query -> direct media url (+headers) in ONE yt-dlp call (faster)
+  const { url, headers, title, pageUrl } = await resolveToDirectAudio(item.source);
+  // Update title if we only had a placeholder (speeds up /play response)
+  if (!item.title || item.title === item.source) item.title = title;
+  // Spawn ffmpeg to transcode the audio stream to Opus/OGG
+  const ff = spawnFfmpegFromDirectUrl(url, buildFfmpegHeadersString(headers));
+  // Maintain a reference for clean up on idle/skip
+  state.currentPipe = { ff, stream: ff.stdout };
+  // We know ffmpeg outputs OGG Opus, so we can skip demuxProbe (faster start)
+  const resource = createAudioResource(ff.stdout, { inputType: StreamType.OggOpus, inlineVolume: true });
   state.currentResource = resource;
   // Apply the current volume setting
   applyVolume(state);
   // Start playback on the audio player
   state.player.play(resource);
+
   return { pageUrl };
 }
 
 function setVolumePct(state, pct){
   if (pct < 0) pct = 0;
-  if (pct > 10000) pct = 10000;
+  if (pct > 1000) pct = 1000;
   state.volumePct = pct;
   applyVolume(state);
 }
@@ -1230,16 +805,12 @@ client.on("interactionCreate", async (itx) => {
   const rtt = rttRaw < 0 ? 0 : rttRaw;
   logPretty("COMMAND", `/${itx.commandName} by ${itx.user.tag}`, { rtt });
 
-  if (itx.commandName === "help") {
-    return itx.reply({ embeds: [buildHelpEmbedSlash()], ephemeral: false });
-  }
-
   const me = itx.guild.members.me;
   const userVC = itx.member?.voice?.channelId;
   const botVC = me?.voice?.channelId;
   const sameVC = userVC && (!botVC || botVC === userVC);
 
-  const needsSameVC = !["help","ping", "botupdate", "np", "queue"].includes(itx.commandName);
+  const needsSameVC = !["ping", "botupdate", "np", "queue"].includes(itx.commandName);
 
   if (needsSameVC && !sameVC) {
     return itx.reply({ content: "❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน", ephemeral: true });
@@ -1261,7 +832,9 @@ client.on("interactionCreate", async (itx) => {
   if (itx.commandName === "play") {
     await itx.deferReply();
     const q = itx.options.getString("query");
-    const title = await getTitle(q);
+    // Don't block /play on yt-dlp metadata (it is slow). We'll resolve real title
+    // later in startPlayback() when we already have to call yt-dlp anyway.
+    const title = q;
     state.queue.push({
       title,
       source: q,
@@ -1339,7 +912,7 @@ client.on("interactionCreate", async (itx) => {
   if (itx.commandName === "playlist") {
     await itx.deferReply();
     const q = itx.options.getString("query");
-    const limit = itx.options.getInteger("limit");
+    const limit = itx.options.getInteger("limit") ?? 25;
 
     const items = await fetchPlaylistEntries(q, limit);
     if (!items.length) {

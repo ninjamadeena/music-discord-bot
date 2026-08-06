@@ -224,7 +224,7 @@ let FFMPEG = null;
 let FFMPEG_AVAILABLE = false;
 // Determine the ffmpeg binary. If the user specifies a custom path via
 // configuration, prefer that. Otherwise fall back to ffmpeg-static and
-// finally to the system ffmapeg.
+// finally to the system ffmpeg.
 try {
   if (config.ffmpegPath) {
     // Use the explicit path provided in config
@@ -250,7 +250,6 @@ function ytdlpOpts(extra = {}) {
     "fragment-retries": "infinite",
     // Respect configured IPv4 forcing
     "force-ipv4": config.ytdlpForceIpv4,
-    "js-runtimes": "node",
   };
   if (config.cookieFile) base.cookies = config.cookieFile;
   return { ...base, ...extra };
@@ -409,35 +408,6 @@ _clientForPing = client;
 const BOT_PREFIX = (process.env.BOT_PREFIX || process.env.COMMAND_PREFIX || "n!").trim();
 // NOTE: avoid process.env.PREFIX because Termux sets PREFIX=/data/... by default.
 
-function buildHelpEmbedPrefix(){
-  const p = BOT_PREFIX;
-  return new EmbedBuilder()
-    .setTitle("🎵 วิธีใช้บอทเพลง (Prefix)")
-    .setDescription(`พิมพ์คำสั่งด้วย **${p}** ตัวอย่าง: \`${p}play ลิงก์หรือชื่อเพลง\``)
-    .addFields(
-      { name: "▶️ เล่นเพลง / เพิ่มคิว", value: `• \`${p}play <ชื่อเพลง|ลิงก์>\`\n• รองรับ Spotify track: \`${p}play https://open.spotify.com/track/...\`` },
-      { name: "📚 เพิ่มเป็นชุด (YouTube)", value: `• \`${p}playlist <ลิงก์หรือคำค้น> --limit 100\`\n• ไม่ใส่ --limit = เพิ่มทั้งหมด` },
-      { name: "🎛️ ควบคุมเพลง", value: `• \`${p}queue\` ดูคิว\n• \`${p}np\` เพลงที่กำลังเล่น\n• \`${p}skip\` ข้าม\n• \`${p}stop\` หยุด+ล้างคิว\n• \`${p}pause\` / \`${p}resume\`\n• \`${p}shuffle\`\n• \`${p}remove <เลข>\`` },
-      { name: "🔁 วน / 🔊 เสียง", value: `• \`${p}loop off|track|queue\`\n• \`${p}volume 0-10000\`` },
-      { name: "🧰 ระบบ", value: `• \`${p}ping\`\n• \`${p}botupdate\`` },
-    )
-    .setFooter({ text: "Tip: คำสั่ง+ลิงก์ ควรพิมพ์ในบรรทัดเดียว" });
-}
-
-function buildHelpEmbedSlash(){
-  return new EmbedBuilder()
-    .setTitle("🎵 วิธีใช้บอทเพลง (Slash)")
-    .setDescription("ใช้คำสั่งแบบ **/** ได้เลย เช่น `/play query:<ชื่อเพลง/ลิงก์>`")
-    .addFields(
-      { name: "▶️ เล่นเพลง / เพิ่มคิว", value: "• `/play query:<ชื่อเพลง|ลิงก์>`\n• รองรับ Spotify track (ใส่ลิงก์ใน query ได้)" },
-      { name: "📚 เพิ่มเป็นชุด (YouTube)", value: "• `/playlist query:<ลิงก์หรือคำค้น> limit:<จำนวน>`\n• ไม่ใส่ limit = เพิ่มทั้งหมด" },
-      { name: "🎛️ ควบคุมเพลง", value: "• `/queue` ดูคิว\n• `/np` เพลงที่กำลังเล่น\n• `/skip` ข้าม\n• `/stop` หยุด+ล้างคิว\n• `/pause` / `/resume`\n• `/shuffle`\n• `/remove index:<เลข>`" },
-      { name: "🔁 วน / 🔊 เสียง", value: "• `/loop mode:<off|track|queue>`\n• `/volume value:<0-10000>`" },
-      { name: "🧰 ระบบ", value: "• `/ping`\n• `/botupdate`" },
-    )
-    .setFooter({ text: "Tip: ถ้าใช้พิมพ์เร็วๆ แนะนำ n!help (prefix)" });
-}
-
 function parseLimitFromArgs(tokens){
   let limit = null;
   const out = [];
@@ -481,17 +451,11 @@ client.on("messageCreate", async (msg) => {
       st: "stop",
       vol: "volume",
       upd: "botupdate",
-      h: "help",
-      help: "help",
     })[cmdRaw] || cmdRaw;
 
-    const allowed = new Set(["help","play","playlist","skip","stop","pause","resume","queue","np","remove","shuffle","loop","volume","ping","botupdate"]);
+    const allowed = new Set(["play","playlist","skip","stop","pause","resume","queue","np","remove","shuffle","loop","volume","ping","botupdate"]);
     if (!allowed.has(cmd)) {
       return msg.reply(`ไม่รู้จักคำสั่งนี้: \`${BOT_PREFIX}${cmdRaw}\`\nลอง: ${Array.from(allowed).map(c=>`\`${BOT_PREFIX}${c}\``).join(" ")}`);
-    }
-
-    if (cmd === "help") {
-      return msg.reply({ embeds: [buildHelpEmbedPrefix()] });
     }
 
     // Prepare option values similar to slash
@@ -521,7 +485,7 @@ client.on("messageCreate", async (msg) => {
     const userVC = msg.member?.voice?.channelId;
     const botVC = me?.voice?.channelId;
     const sameVC = userVC && (!botVC || botVC === userVC);
-    const needsSameVC = !["help","ping", "botupdate", "np", "queue"].includes(cmd);
+    const needsSameVC = !["ping", "botupdate", "np", "queue"].includes(cmd);
     if (needsSameVC && !sameVC) {
       return msg.reply("❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน");
     }
@@ -677,7 +641,6 @@ const commands = [
           { name: "วนทั้งคิว", value: "queue" },
         )
     ),
-  new SlashCommandBuilder().setName("help").setDescription("แสดงวิธีใช้และคำสั่งทั้งหมด"),
 ].map(c => c.toJSON());
 
 // Guild queue and player state
@@ -925,7 +888,6 @@ function spawnTikTokPipe(pageUrl) {
     "--fragment-retries", "infinite",
     "-f", "ba",
     "-o", "-",
-    "--js-runtimes", "node",
     pageUrl
   );
   // Spawn yt-dlp process
@@ -1230,16 +1192,12 @@ client.on("interactionCreate", async (itx) => {
   const rtt = rttRaw < 0 ? 0 : rttRaw;
   logPretty("COMMAND", `/${itx.commandName} by ${itx.user.tag}`, { rtt });
 
-  if (itx.commandName === "help") {
-    return itx.reply({ embeds: [buildHelpEmbedSlash()], ephemeral: false });
-  }
-
   const me = itx.guild.members.me;
   const userVC = itx.member?.voice?.channelId;
   const botVC = me?.voice?.channelId;
   const sameVC = userVC && (!botVC || botVC === userVC);
 
-  const needsSameVC = !["help","ping", "botupdate", "np", "queue"].includes(itx.commandName);
+  const needsSameVC = !["ping", "botupdate", "np", "queue"].includes(itx.commandName);
 
   if (needsSameVC && !sameVC) {
     return itx.reply({ content: "❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน", ephemeral: true });

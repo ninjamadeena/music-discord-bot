@@ -2,17 +2,21 @@
 require("dotenv").config();
 
 // --- Spotify link support (no direct Spotify audio streaming) ---
-// Accept Spotify TRACK/EPISODE URLs/URIs and convert to a YouTube search query.
+// We accept Spotify TRACK URLs/URIs and convert them into a YouTube search query,
+// then play the matched audio via yt-dlp (same pipeline as normal /play).
 function isSpotifyUrl(s){
   return typeof s === "string" && (s.includes("open.spotify.com/") || s.startsWith("spotify:"));
 }
 function normalizeSpotifyUrl(input){
   if (!input || typeof input !== "string") return null;
-  const m = input.match(/^spotify:(track|album|playlist|episode):([A-Za-z0-9]+)$/);
+  // spotify:track:<id>
+  const m = input.match(/^spotify:(track|album|playlist):([A-Za-z0-9]+)$/);
   if (m) return `https://open.spotify.com/${m[1]}/${m[2]}`;
+  // Strip angle brackets that some apps add
   return input.replace(/^<|>$/g, "");
 }
 function spotifyKind(url){
+  if (!url) return null;
   const u = normalizeSpotifyUrl(url);
   if (!u) return null;
   const m = u.match(/open\.spotify\.com\/(track|album|playlist|episode)\/([A-Za-z0-9]+)/i);
@@ -29,6 +33,23 @@ async function fetchJsonWithTimeout(url, ms=8000){
     clearTimeout(t);
   }
 }
+function parseSpotifyOEmbedTitle(title){
+  // Usually: "Song Name - Artist" for tracks.
+  if (!title || typeof title !== "string") return null;
+  return title.trim();
+}
+async function spotifyTrackToSearchQuery(input){
+  const url = normalizeSpotifyUrl(input);
+  const kind = spotifyKind(url);
+  if (kind !== "track" && kind !== "episode") return null;
+  // Spotify oEmbed works without API keys
+  const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`;
+  const data = await fetchJsonWithTimeout(oembedUrl, 8000);
+  const t = parseSpotifyOEmbedTitle(data?.title);
+  if (!t) return null;
+  // Add a tiny hint to prefer audio/official uploads
+  return `${t} audio`;
+}
 async function spotifyTitle(input){
   const url = normalizeSpotifyUrl(input);
   const kind = spotifyKind(url);
@@ -37,15 +58,9 @@ async function spotifyTitle(input){
   const data = await fetchJsonWithTimeout(oembedUrl, 8000);
   return data?.title ? String(data.title) : null;
 }
-async function spotifyTrackToSearchQuery(input){
-  const url = normalizeSpotifyUrl(input);
-  const kind = spotifyKind(url);
-  if (kind !== "track" && kind !== "episode") return null;
-  const t = await spotifyTitle(url);
-  if (!t) return null;
-  return `${t} audio`;
-}
 // --- end Spotify support ---
+
+
 
 /* Clamp negative or invalid timer delays to 1 ms to avoid TimeoutNegativeWarning. */
 
@@ -224,7 +239,7 @@ let FFMPEG = null;
 let FFMPEG_AVAILABLE = false;
 // Determine the ffmpeg binary. If the user specifies a custom path via
 // configuration, prefer that. Otherwise fall back to ffmpeg-static and
-// finally to the system ffmapeg.
+// finally to the system ffmpeg.
 try {
   if (config.ffmpegPath) {
     // Use the explicit path provided in config
@@ -250,7 +265,6 @@ function ytdlpOpts(extra = {}) {
     "fragment-retries": "infinite",
     // Respect configured IPv4 forcing
     "force-ipv4": config.ytdlpForceIpv4,
-    "js-runtimes": "node",
   };
   if (config.cookieFile) base.cookies = config.cookieFile;
   return { ...base, ...extra };
@@ -404,41 +418,15 @@ const client = new Client({ intents: [
   GatewayIntentBits.MessageContent,
 ] });
 _clientForPing = client;
-
 // --- Prefix commands (e.g., n!play ...) ---
-const BOT_PREFIX = (process.env.BOT_PREFIX || process.env.COMMAND_PREFIX || "n!").trim();
-// NOTE: avoid process.env.PREFIX because Termux sets PREFIX=/data/... by default.
+// Requires Developer Portal: Message Content Intent = ON
+const PREFIX = (process.env.BOT_PREFIX || process.env.COMMAND_PREFIX || "n!").trim();
+// NOTE: avoid using process.env.PREFIX because Termux sets PREFIX=/data/... by default.
+console.log(`[BOT] PREFIX=${JSON.stringify(PREFIX)}`);
 
-function buildHelpEmbedPrefix(){
-  const p = BOT_PREFIX;
-  return new EmbedBuilder()
-    .setTitle("🎵 วิธีใช้บอทเพลง (Prefix)")
-    .setDescription(`พิมพ์คำสั่งด้วย **${p}** ตัวอย่าง: \`${p}play ลิงก์หรือชื่อเพลง\``)
-    .addFields(
-      { name: "▶️ เล่นเพลง / เพิ่มคิว", value: `• \`${p}play <ชื่อเพลง|ลิงก์>\`\n• รองรับ Spotify track: \`${p}play https://open.spotify.com/track/...\`` },
-      { name: "📚 เพิ่มเป็นชุด (YouTube)", value: `• \`${p}playlist <ลิงก์หรือคำค้น> --limit 100\`\n• ไม่ใส่ --limit = เพิ่มทั้งหมด` },
-      { name: "🎛️ ควบคุมเพลง", value: `• \`${p}queue\` ดูคิว\n• \`${p}np\` เพลงที่กำลังเล่น\n• \`${p}skip\` ข้าม\n• \`${p}stop\` หยุด+ล้างคิว\n• \`${p}pause\` / \`${p}resume\`\n• \`${p}shuffle\`\n• \`${p}remove <เลข>\`` },
-      { name: "🔁 วน / 🔊 เสียง", value: `• \`${p}loop off|track|queue\`\n• \`${p}volume 0-10000\`` },
-      { name: "🧰 ระบบ", value: `• \`${p}ping\`\n• \`${p}botupdate\`` },
-    )
-    .setFooter({ text: "Tip: คำสั่ง+ลิงก์ ควรพิมพ์ในบรรทัดเดียว" });
-}
-
-function buildHelpEmbedSlash(){
-  return new EmbedBuilder()
-    .setTitle("🎵 วิธีใช้บอทเพลง (Slash)")
-    .setDescription("ใช้คำสั่งแบบ **/** ได้เลย เช่น `/play query:<ชื่อเพลง/ลิงก์>`")
-    .addFields(
-      { name: "▶️ เล่นเพลง / เพิ่มคิว", value: "• `/play query:<ชื่อเพลง|ลิงก์>`\n• รองรับ Spotify track (ใส่ลิงก์ใน query ได้)" },
-      { name: "📚 เพิ่มเป็นชุด (YouTube)", value: "• `/playlist query:<ลิงก์หรือคำค้น> limit:<จำนวน>`\n• ไม่ใส่ limit = เพิ่มทั้งหมด" },
-      { name: "🎛️ ควบคุมเพลง", value: "• `/queue` ดูคิว\n• `/np` เพลงที่กำลังเล่น\n• `/skip` ข้าม\n• `/stop` หยุด+ล้างคิว\n• `/pause` / `/resume`\n• `/shuffle`\n• `/remove index:<เลข>`" },
-      { name: "🔁 วน / 🔊 เสียง", value: "• `/loop mode:<off|track|queue>`\n• `/volume value:<0-10000>`" },
-      { name: "🧰 ระบบ", value: "• `/ping`\n• `/botupdate`" },
-    )
-    .setFooter({ text: "Tip: ถ้าใช้พิมพ์เร็วๆ แนะนำ n!help (prefix)" });
-}
 
 function parseLimitFromArgs(tokens){
+  // Supports: --limit 100  |  limit 100  |  -l 100
   let limit = null;
   const out = [];
   for (let i=0;i<tokens.length;i++){
@@ -446,7 +434,7 @@ function parseLimitFromArgs(tokens){
     if (t === "--limit" || t === "limit" || t === "-l"){
       const n = parseInt(tokens[i+1], 10);
       if (!Number.isNaN(n)) limit = n;
-      i++;
+      i++; // skip value
       continue;
     }
     out.push(t);
@@ -454,25 +442,82 @@ function parseLimitFromArgs(tokens){
   return { limit, tokens: out };
 }
 
-async function replyAck(msg, text){
-  try { return await msg.channel.send({ content: text }); } catch { return null; }
+function buildPseudoItxFromMessage(msg, commandName, opts, initialReplyMsg){
+  let repliedMsg = initialReplyMsg || null;
+  const pseudo = {
+    commandName,
+    user: msg.author,
+    member: msg.member,
+    guild: msg.guild,
+    channel: msg.channel,
+    createdTimestamp: msg.createdTimestamp ?? Date.now(),
+    isChatInputCommand: () => true,
+    options: {
+      getString: (name) => {
+        if (name === "query") return opts.query ?? null;
+        if (name === "mode") return opts.mode ?? null;
+        return null;
+      },
+      getInteger: (name) => {
+        if (name === "limit") return (typeof opts.limit === "number" ? opts.limit : null);
+        if (name === "index") return (typeof opts.index === "number" ? opts.index : null);
+        if (name === "value") return (typeof opts.value === "number" ? opts.value : null);
+        return null;
+      }
+    },
+    reply: async (payload) => {
+      // If we already sent an acknowledgement message, edit it instead of creating a new reply.
+      const p = (typeof payload === "string") ? { content: payload } : { ...(payload || {}) };
+      delete p.ephemeral;
+      if (repliedMsg) {
+        try { await repliedMsg.edit(p); return repliedMsg; } catch {}
+      }
+      repliedMsg = await msg.reply(p);
+      return repliedMsg;
+    },
+    deferReply: async (_payload) => {
+      // For prefix, we might already have an ack; otherwise send a placeholder we can edit later.
+      if (!repliedMsg) repliedMsg = await msg.reply({ content: "⏳ กำลังทำงาน..." });
+      return repliedMsg;
+    },
+    editReply: async (payload) => {
+      if (!repliedMsg) return await pseudo.reply(payload);
+      if (typeof payload === "string") {
+        return await repliedMsg.edit({ content: payload });
+      }
+      const p = { ...(payload || {}) };
+      delete p.ephemeral;
+      return await repliedMsg.edit(p);
+    },
+    followUp: async (payload) => {
+      if (typeof payload === "string") return await msg.channel.send({ content: payload });
+      const p = { ...(payload || {}) };
+      delete p.ephemeral;
+      return await msg.channel.send(p);
+    },
+  };
+  return pseudo;
 }
 
 client.on("messageCreate", async (msg) => {
   try {
     if (!msg.guild) return;
     if (msg.author?.bot) return;
-
     const raw = (msg.content || "").trim();
-    if (!raw.startsWith(BOT_PREFIX)) return;
+    // Debug: log first 80 chars of messages that start with prefix
+    if (raw.startsWith(PREFIX)) {
+      console.log(`[PREFIX] from=${msg.author?.tag} guild=${msg.guild?.id} channel=${msg.channel?.id} content=${JSON.stringify(raw.slice(0,80))}`);
+    }
+    if (!raw.startsWith(PREFIX)) return;
 
-    const body = raw.slice(BOT_PREFIX.length).trim();
+    const body = raw.slice(PREFIX.length).trim();
     if (!body) return;
 
     const parts = body.split(/\s+/);
-    const cmdRaw = (parts.shift() || "").toLowerCase();
+    const cmd = (parts.shift() || "").toLowerCase();
 
-    const cmd = ({
+    // Aliases
+    const commandName = ({
       p: "play",
       q: "queue",
       now: "np",
@@ -481,164 +526,74 @@ client.on("messageCreate", async (msg) => {
       st: "stop",
       vol: "volume",
       upd: "botupdate",
-      h: "help",
-      help: "help",
-    })[cmdRaw] || cmdRaw;
+    })[cmd] || cmd;
 
-    const allowed = new Set(["help","play","playlist","skip","stop","pause","resume","queue","np","remove","shuffle","loop","volume","ping","botupdate"]);
-    if (!allowed.has(cmd)) {
-      return msg.reply(`ไม่รู้จักคำสั่งนี้: \`${BOT_PREFIX}${cmdRaw}\`\nลอง: ${Array.from(allowed).map(c=>`\`${BOT_PREFIX}${c}\``).join(" ")}`);
+    // Parse options per command
+    let opts = {};
+    if (commandName === "play") {
+      opts.query = parts.join(" ").trim();
+      if (!opts.query) return msg.reply("ใส่คำค้น/ลิงก์ด้วยนะ เช่น `n!play คำค้น` หรือ `n!play https://open.spotify.com/track/...`");
+    } else if (commandName === "playlist") {
+      const { limit, tokens } = parseLimitFromArgs(parts);
+      opts.query = tokens.join(" ").trim();
+      if (typeof limit === "number") opts.limit = limit;
+      if (!opts.query) return msg.reply("ใส่คำค้น/ลิงก์ playlist ด้วยนะ เช่น `n!playlist <url> --limit 100`");
+    } else if (commandName === "remove") {
+      const n = parseInt(parts[0], 10);
+      if (Number.isNaN(n) || n < 1) return msg.reply("ใส่เลขลำดับเพลงที่จะลบ เช่น `n!remove 3`");
+      opts.index = n;
+    } else if (commandName === "loop") {
+      const mode = (parts[0] || "").toLowerCase();
+      if (!mode) return msg.reply("ใส่โหมดด้วยนะ: `off` | `track` | `queue` เช่น `n!loop track`");
+      opts.mode = mode;
+    } else if (commandName === "volume") {
+      const v = parseInt(parts[0], 10);
+      if (Number.isNaN(v)) return msg.reply("ใส่ค่าความดังเป็นตัวเลข เช่น `n!volume 500`");
+      opts.value = v;
     }
 
-    if (cmd === "help") {
-      return msg.reply({ embeds: [buildHelpEmbedPrefix()] });
+    // Supported command whitelist (same set as slash)
+    const allowed = new Set(["play","playlist","skip","stop","pause","resume","queue","np","remove","shuffle","loop","volume","ping","botupdate"]);
+    if (!allowed.has(commandName)) {
+      return msg.reply(`ไม่รู้จักคำสั่งนี้: \`${PREFIX}${cmd}\`\nลอง: ${Array.from(allowed).map(c=>`\`${PREFIX}${c}\``).join(" ")}`);
     }
 
-    // Prepare option values similar to slash
-    let q = null, limit = null, index = null, mode = null, value = null;
+    
+    // Quick acknowledgement (so you can see the bot received the prefix command)
+    let ackText = null;
+    if (commandName === "play") ackText = "🎵 รับคำสั่งแล้ว กำลังเริ่มเพลง...";
+    else if (commandName === "playlist") ackText = "📚 รับคำสั่งแล้ว กำลังเพิ่มเพลงเข้าคิว...";
+    else if (commandName === "skip") ackText = "⏭️ รับคำสั่งแล้ว กำลังข้ามเพลง...";
+    else if (commandName === "stop") ackText = "⏹️ รับคำสั่งแล้ว กำลังหยุดและล้างคิว...";
+    else if (commandName === "pause") ackText = "⏸️ รับคำสั่งแล้ว กำลังหยุดชั่วคราว...";
+    else if (commandName === "resume") ackText = "▶️ รับคำสั่งแล้ว กำลังเล่นต่อ...";
+    else if (commandName === "queue") ackText = "📜 รับคำสั่งแล้ว กำลังดึงคิว...";
+    else if (commandName === "np") ackText = "🎶 รับคำสั่งแล้ว กำลังดึงเพลงที่กำลังเล่น...";
+    else if (commandName === "remove") ackText = `🗑️ รับคำสั่งแล้ว กำลังลบเพลงลำดับที่ ${opts.index}...`;
+    else if (commandName === "shuffle") ackText = "🔀 รับคำสั่งแล้ว กำลังสุ่มคิว...";
+    else if (commandName === "loop") ackText = `🔁 รับคำสั่งแล้ว กำลังตั้งค่า loop เป็น ${opts.mode}...`;
+    else if (commandName === "volume") ackText = `🔊 รับคำสั่งแล้ว กำลังปรับระดับเสียงเป็น ${opts.value}...`;
+    else if (commandName === "ping") ackText = "🏓 รับคำสั่งแล้ว กำลังเช็ค ping...";
+    else if (commandName === "botupdate") ackText = "🛠️ รับคำสั่งแล้ว กำลังอัปเดต yt-dlp...";
 
-    if (cmd === "play") {
-      q = parts.join(" ").trim();
-      if (!q) return msg.reply(`ใส่คำค้น/ลิงก์ด้วยนะ เช่น \`${BOT_PREFIX}play คำค้น\` หรือ \`${BOT_PREFIX}play https://open.spotify.com/track/...\``);
-    } else if (cmd === "playlist") {
-      const parsed = parseLimitFromArgs(parts);
-      limit = parsed.limit;
-      q = parsed.tokens.join(" ").trim();
-      if (!q) return msg.reply(`ใส่คำค้น/ลิงก์ playlist ด้วยนะ เช่น \`${BOT_PREFIX}playlist <url> --limit 100\``);
-    } else if (cmd === "remove") {
-      index = parseInt(parts[0], 10);
-      if (Number.isNaN(index) || index < 1) return msg.reply(`ใส่เลขลำดับเพลงที่จะลบ เช่น \`${BOT_PREFIX}remove 3\``);
-    } else if (cmd === "loop") {
-      mode = (parts[0] || "").toLowerCase();
-      if (!mode) return msg.reply(`ใส่โหมด: off|track|queue เช่น \`${BOT_PREFIX}loop track\``);
-    } else if (cmd === "volume") {
-      value = parseInt(parts[0], 10);
-      if (Number.isNaN(value)) return msg.reply(`ใส่ค่าความดังเป็นตัวเลข เช่น \`${BOT_PREFIX}volume 700\``);
-    }
-
-    // Voice channel check (same as slash)
-    const me = msg.guild.members.me;
-    const userVC = msg.member?.voice?.channelId;
-    const botVC = me?.voice?.channelId;
-    const sameVC = userVC && (!botVC || botVC === userVC);
-    const needsSameVC = !["help","ping", "botupdate", "np", "queue"].includes(cmd);
-    if (needsSameVC && !sameVC) {
-      return msg.reply("❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน");
-    }
-
-    // Acknowledge receipt
-    if (cmd === "play") await replyAck(msg, "🎵 รับคำสั่งแล้ว กำลังเริ่มเพลง...");
-    else if (cmd === "playlist") await replyAck(msg, "📚 รับคำสั่งแล้ว กำลังเพิ่มเพลงเข้าคิว...");
-    else if (cmd === "volume") await replyAck(msg, `🔊 รับคำสั่งแล้ว กำลังปรับระดับเสียงเป็น ${value}...`);
-    else if (cmd === "skip") await replyAck(msg, "⏭️ รับคำสั่งแล้ว กำลังข้ามเพลง...");
-    else if (cmd === "stop") await replyAck(msg, "⏹️ รับคำสั่งแล้ว กำลังหยุดและล้างคิว...");
-    else if (cmd === "pause") await replyAck(msg, "⏸️ รับคำสั่งแล้ว กำลังหยุดชั่วคราว...");
-    else if (cmd === "resume") await replyAck(msg, "▶️ รับคำสั่งแล้ว กำลังเล่นต่อ...");
-    else if (cmd === "ping") await replyAck(msg, "🏓 รับคำสั่งแล้ว กำลังเช็ค ping...");
-    else if (cmd === "botupdate") await replyAck(msg, "🛠️ รับคำสั่งแล้ว กำลังอัปเดต yt-dlp...");
-
-    // Execute using the same internal functions as slash
-    const state = getGuildState(msg.guild);
-
-    if (cmd === "ping") {
-      return msg.reply(`\n> WebSocket: \`${Math.round(msg.client.ws.ping)} ms\``);
-    }
-
-    if (cmd === "botupdate") {
-      const m = await msg.reply("🛠️ กำลังอัปเดต yt-dlp...");
-      await runYtDlpUpdate((t) => m.edit(t));
-      return;
-    }
-
-    if (cmd === "play") {
-      const title = await getTitle(q);
-      state.queue.push({
-        title,
-        source: q,
-        requestedBy: msg.author.tag,
-        guild: msg.guild,
-        voiceChannelId: userVC,
-        textChannelId: msg.channelId,
-      });
-      await msg.reply(`➕ เพิ่ม: **${title}**`);
-      if (!state.current) playNext(msg.guild, msg.channelId, state);
-      return;
-    }
-
-    if (cmd === "playlist") {
-      const items = await fetchPlaylistEntries(q, limit);
-      if (!items.length) return msg.reply("❌ หาเพลงในเพลย์ลิสต์/ผลค้นหาไม่เจอ");
-      for (const { title, url } of items) {
-        state.queue.push({
-          title,
-          source: url,
-          requestedBy: msg.author.tag,
-          guild: msg.guild,
-          voiceChannelId: userVC,
-          textChannelId: msg.channelId,
-        });
+    let ackMsg = null;
+    if (ackText) {
+      try {
+        ackMsg = await msg.channel.send({ content: ackText });
+      } catch (err) {
+        console.log(`[PREFIX] send ack failed: ${err?.message || err}`);
+        try {
+          ackMsg = await msg.reply({ content: ackText });
+        } catch (err2) {
+          console.log(`[PREFIX] reply ack failed: ${err2?.message || err2}`);
+          try { await msg.author.send({ content: ackText }); } catch {}
+        }
       }
-      await msg.reply(`➕ เพิ่มทั้งสิ้น **${items.length}** เพลง`);
-      if (!state.current) playNext(msg.guild, msg.channelId, state);
-      return;
     }
 
-    if (cmd === "skip") {
-      state.skipRequested = true;
-      state.player.stop(true);
-      cleanupCurrentPipeline(state);
-      return msg.reply("⏭️ ข้ามเพลงปัจจุบัน");
-    }
-
-    if (cmd === "stop") {
-      state.queue = [];
-      state.current = null;
-      state.loopMode = "off";
-      state.skipRequested = false;
-      state.player.stop(true);
-      cleanupCurrentPipeline(state);
-      const vc = getVoiceConnection(msg.guild.id);
-      if (vc) vc.destroy();
-      return msg.reply("🛑 หยุดและล้างคิวแล้ว");
-    }
-
-    if (cmd === "pause") { state.player.pause(); return msg.reply("⏸️ หยุดชั่วคราว"); }
-    if (cmd === "resume") { state.player.unpause(); return msg.reply("▶️ เล่นต่อ"); }
-
-    if (cmd === "np") {
-      if (!state.current) return msg.reply("ℹ️ ยังไม่มีเพลงกำลังเล่น");
-      return msg.reply(`🎶 กำลังเล่น: **${state.current.title}**\nขอโดย: ${state.current.requestedBy}`);
-    }
-
-    if (cmd === "queue") {
-      if (!state.queue.length) return msg.reply("📭 คิวว่าง");
-      const lines = state.queue.slice(0, 10).map((x, i) => `\`${i+1}.\` ${x.title} — *${x.requestedBy}*`);
-      const more = state.queue.length > 10 ? `\n…และอีก ${state.queue.length - 10} เพลง` : "";
-      return msg.reply(`🎼 **คิวเพลง (${state.queue.length})**\n${lines.join("\n")}${more}`);
-    }
-
-    if (cmd === "volume") {
-      setVolumePct(state, value);
-      return msg.reply(`🔊 ปรับความดังเป็น **${state.volumePct}%**`);
-    }
-
-    if (cmd === "shuffle") {
-      shuffleArray(state.queue);
-      return msg.reply("🔀 สุ่มคิวแล้ว");
-    }
-
-    if (cmd === "remove") {
-      if (index > state.queue.length) return msg.reply("❌ เลขเกินจำนวนในคิว");
-      const [rm] = state.queue.splice(index - 1, 1);
-      return msg.reply(`🗑️ ลบ: **${rm?.title || "รายการ"}**`);
-    }
-
-    if (cmd === "loop") {
-      if (!["off","track","queue"].includes(mode)) return msg.reply("❌ โหมดต้องเป็น off|track|queue");
-      state.loopMode = mode;
-      return msg.reply(`🔁 ตั้งค่า loop เป็น **${mode}**`);
-    }
-
+    const pseudo = buildPseudoItxFromMessage(msg, commandName, opts, ackMsg);
+    // Reuse the same logic as slash by emitting an interaction-like event
+    client.emit("interactionCreate", pseudo);
   } catch (e) {
     console.error(e);
     try { await msg.reply("เกิดข้อผิดพลาดตอนอ่านคำสั่ง (prefix)"); } catch {}
@@ -677,7 +632,6 @@ const commands = [
           { name: "วนทั้งคิว", value: "queue" },
         )
     ),
-  new SlashCommandBuilder().setName("help").setDescription("แสดงวิธีใช้และคำสั่งทั้งหมด"),
 ].map(c => c.toJSON());
 
 // Guild queue and player state
@@ -752,24 +706,39 @@ function isUrl(s){ try { new URL(s); return true; } catch { return false; } }
 
 // yt-dlp helper functions
 async function getTitle(input){
+  // Spotify: show a friendly title even though we stream from YouTube
   try {
     if (isSpotifyUrl(input)) {
       const t = await spotifyTitle(input);
       if (t) return t;
     }
-
+  } catch {}
+  try {
     const info = await ytdlp(input, ytdlpOpts({ dumpSingleJson: true }));
     if (info?.title) return info.title;
   } catch {}
   return input;
 }
 async function resolveFirstVideoUrl(query){
-  if (isSpotifyUrl(query)) {
-    const kind = spotifyKind(query);
-    if (kind === "album" || kind === "playlist") return null;
-    const q2 = await spotifyTrackToSearchQuery(query);
-    if (q2) query = q2;
+  // Spotify TRACK/EPISODE links/URIs: convert to a YouTube search first.
+  try {
+    if (isSpotifyUrl(query)) {
+      const kind = spotifyKind(query);
+      if (kind === "track" || kind === "episode") {
+        const q = await spotifyTrackToSearchQuery(query);
+        if (q) {
+          const out = await ytdlp(`ytsearch1:${q}`, ytdlpOpts({ dumpSingleJson: true }));
+          return out?.entries?.[0]?.webpage_url || null;
+        }
+      }
+      // album/playlist need Spotify Web API (OAuth) to enumerate tracks
+      return null;
+    }
+  } catch (e) {
+    logPretty("ERROR", "spotify resolve fail: " + (e?.message || e));
+    return null;
   }
+
   if (isUrl(query)) return query;
   try {
     const out = await ytdlp(`ytsearch1:${query}`, ytdlpOpts({ dumpSingleJson: true }));
@@ -925,7 +894,6 @@ function spawnTikTokPipe(pageUrl) {
     "--fragment-retries", "infinite",
     "-f", "ba",
     "-o", "-",
-    "--js-runtimes", "node",
     pageUrl
   );
   // Spawn yt-dlp process
@@ -1230,16 +1198,12 @@ client.on("interactionCreate", async (itx) => {
   const rtt = rttRaw < 0 ? 0 : rttRaw;
   logPretty("COMMAND", `/${itx.commandName} by ${itx.user.tag}`, { rtt });
 
-  if (itx.commandName === "help") {
-    return itx.reply({ embeds: [buildHelpEmbedSlash()], ephemeral: false });
-  }
-
   const me = itx.guild.members.me;
   const userVC = itx.member?.voice?.channelId;
   const botVC = me?.voice?.channelId;
   const sameVC = userVC && (!botVC || botVC === userVC);
 
-  const needsSameVC = !["help","ping", "botupdate", "np", "queue"].includes(itx.commandName);
+  const needsSameVC = !["ping", "botupdate", "np", "queue"].includes(itx.commandName);
 
   if (needsSameVC && !sameVC) {
     return itx.reply({ content: "❌ กรุณาเข้าห้องเสียงเดียวกับบอทก่อน", ephemeral: true });
@@ -1261,6 +1225,11 @@ client.on("interactionCreate", async (itx) => {
   if (itx.commandName === "play") {
     await itx.deferReply();
     const q = itx.options.getString("query");
+const kind = isSpotifyUrl(q) ? spotifyKind(q) : null;
+if (kind === "album" || kind === "playlist") {
+  await itx.editReply("ลิงก์ Spotify แบบ **อัลบั้ม/เพลย์ลิสต์** ยังเพิ่มทั้งลิสต์ไม่ได้ในเวอร์ชันนี้ (ต้องใช้ Spotify Web API + OAuth เพื่อดึงรายชื่อเพลงทั้งหมด) — ตอนนี้รองรับเฉพาะ **Spotify Track** นะครับ");
+  return;
+}
     const title = await getTitle(q);
     state.queue.push({
       title,
